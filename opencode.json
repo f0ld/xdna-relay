@@ -1,0 +1,54 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "relay_local/qwen3.6-35b-a3b",
+  "providers": {
+    "relay_local": {
+      "name": "xdna-relay local (llama.cpp via contio)",
+      "package": "aisdk:@ai-sdk/openai-compatible",
+      "settings": {
+        "baseURL": "http://127.0.0.1:8080/v1",
+        "apiKey": "dummy"
+      },
+      "models": {
+        "qwen3.6-35b-a3b": {
+          "name": "Qwen3.6-35B-A3B (local, offline)",
+          "capabilities": {
+            "tools": true,
+            "input": ["text"],
+            "output": ["text"]
+          },
+          "limit": {
+            "context": 130560,
+            "output": 16384
+          }
+        }
+      }
+    }
+  },
+  "permissions": [
+    { "action": "edit", "resource": "*", "effect": "allow" },
+    { "action": "edit", "resource": "*tests/reference/*", "effect": "deny" },
+    { "action": "edit", "resource": "*tests/kernels/*", "effect": "deny" },
+    { "action": "edit", "resource": "*tests/conftest.py", "effect": "deny" },
+    { "action": "edit", "resource": "*tasks/*", "effect": "deny" },
+    { "action": "edit", "resource": "*review/*", "effect": "deny" },
+    { "action": "edit", "resource": "*docs/decisions/*", "effect": "deny" },
+    { "action": "edit", "resource": "*docs/ARCHITECTURE.md", "effect": "deny" },
+    { "action": "edit", "resource": "*PROTOCOL.md", "effect": "deny" },
+    { "action": "edit", "resource": "*scripts/hooks/*", "effect": "deny" },
+    { "action": "edit", "resource": "*scripts/test.sh", "effect": "deny" },
+    { "action": "shell", "resource": "*", "effect": "ask" },
+    { "action": "shell", "resource": "scripts/*", "effect": "allow" },
+    { "action": "shell", "resource": "git status *", "effect": "allow" },
+    { "action": "shell", "resource": "git diff *", "effect": "allow" },
+    { "action": "shell", "resource": "git log *", "effect": "allow" },
+    { "action": "shell", "resource": "git add *", "effect": "allow" },
+    { "action": "shell", "resource": "git commit *", "effect": "allow" },
+    { "action": "shell", "resource": "git commit --no-verify*", "effect": "deny" },
+    { "action": "shell", "resource": "git commit -n*", "effect": "deny" },
+    { "action": "shell", "resource": "git push *", "effect": "deny" },
+    { "action": "shell", "resource": "sudo *", "effect": "deny" },
+    { "action": "webfetch", "resource": "*", "effect": "deny" },
+    { "action": "websearch", "resource": "*", "effect": "deny" }
+  ]
+}

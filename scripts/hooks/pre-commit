@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Rejects commits that touch architect-owned paths unless ARCHITECT=1.
+# Installed with: git config core.hooksPath scripts/hooks
+[ "${ARCHITECT:-0}" = "1" ] && exit 0
+protected='^(tests/reference/|tests/kernels/|tasks/|review/|PROTOCOL\.md$|docs/ARCHITECTURE\.md$|docs/decisions/|scripts/hooks/|scripts/test\.sh$|tests/conftest\.py$)'
+bad=$(git diff --cached --name-only --diff-filter=ACMRD | grep -E "$protected" || true)
+if [ -n "$bad" ]; then
+    echo "pre-commit: these paths are protected (architect-only):" >&2
+    echo "$bad" | sed 's/^/  /' >&2
+    echo "Unstage them (git restore --staged <path>) or escalate with @DESIGN." >&2
+    exit 1
+fi
+exit 0

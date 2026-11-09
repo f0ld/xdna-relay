@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xdna-relay"
+version = "0.0.1"
+description = "Linux-first LLM inference on the AMD XDNA2 NPU (prefill) with iGPU decode"
+requires-python = ">=3.11,<3.15"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+# "." makes tests.reference importable from tests/kernels.
+pythonpath = ["src", "."]
+testpaths = ["tests"]
+markers = [
+    "npu: needs the XDNA2 NPU (never skipped: a missing device is a FAIL)",
+]
+timeout = 600

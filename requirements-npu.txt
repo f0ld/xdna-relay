@@ -1,0 +1,16 @@
+# NPU toolchain + reference stack for xdna-relay. Installed by scripts/setup-venv.sh into .venv/.
+# Pins track amd/IRON's requirements.txt at the IRON commit below; bump all three together
+# (see docs/knowledge/toolchain.md "Moving the pins").
+--find-links https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4
+--find-links https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+mlir_aie==1.4.6.dev15+ge5a3fa1
+llvm-aie==22.0.0.2026102001+4f5df13d
+iron @ git+https://github.com/amd/IRON@3c47c7a
+
+numpy
+ml_dtypes
+torch
+pytest
+pytest-timeout
