@@ -42,3 +42,13 @@ Architect curates.
 - **torch bf16 ↔ numpy**: `Tensor.numpy()` rejects bf16. Reinterpret bits:
   `t.contiguous().view(torch.int16).numpy().view(ml_dtypes.bfloat16)` and back with
   `torch.from_numpy(a.view(np.int16).copy()).view(torch.bfloat16)`.
+
+## Formats (GGUF, Q4NX)
+
+- **GGUF dims are reversed**: gguf-py's `ReaderTensor.shape` is `[in, out]` (numpy uint64);
+  `.data` of a quantized tensor is `uint8 (out, row_bytes)`; `gguf.quants.dequantize` returns
+  `(out, in)` float32 (= PyTorch `Linear.weight` layout). Verified 2026-11-11, gguf 0.19.0.
+- **"Q4_K_M" GGUF files are a mix**: Qwen3.5-9B-Q4_K_M by params = Q4_K 66%, Q6_K 21%,
+  Q5_K 14%, Q8_0 0.1%. Only Q4_0/Q4_K go to Q4NX (ADR 0005); the rest take the bf16 fallback.
+- **gguf-py cannot quantize Q4_K/Q5_K/Q6_K** (`NotImplementedError`). Tests use random raw blocks
+  with finite f16 scales (`tests/reference/gguf_files.py`).

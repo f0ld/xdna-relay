@@ -22,10 +22,12 @@ NPU kernels in IRON) or GGUF Q4_0/Q4_K (llama.cpp ecosystem). Facts, all checked
   - Q4NX-Gemma4: 32 (n) × 256 (k) block, groups of 32 along k per n, bf16 `scale`, `min`;
     `w = min + scale·code`, code ∈ 0..15.
   - So `scale = d·sc[j]`, `min = −dmin·m[j]` (Q4_K) and `scale = d`, `min = −8d` (Q4_0), with
-    codes copied as-is. The Q4_K super-block (256 along K) equals Q4NX's `K_TILE`. The **only
-    loss** is rounding scale/min to bf16: ≤ 2^-9 relative on the scale, i.e. at most
-    15·2^-9 ≈ 3% of one quantization step per weight. That is well inside 4-bit quantization
-    noise (±0.5 step), but it is **not bit-exact**.
+    codes copied as-is. The Q4_K super-block (256 along K) equals Q4NX's `K_TILE`. In float32
+    these are exact: `scale·code + min` reproduces gguf-py's dequantization bit for bit (T-003 tests).
+    The **only loss** is rounding scale and min to bf16 for Q4NX. Measured on
+    `Qwen3.5-9B-Q4_K_M` `blk.0.ffn_gate.weight` (12288×4096): max error 0.088 of one quantization
+    step, relative RMS weight error 5.0e-3. `min` dominates because |min| ≫ scale. This is small
+    against 4-bit quantization noise (±0.5 step) but **not bit-exact**.
 - **A real "Q4_K_M" file is not all Q4_K.** Measured on `Qwen3.5-9B-Q4_K_M.gguf` (by parameter
   count): Q4_K 65.8%, Q6_K 20.6% (`ffn_down`, some `attn_v`, `output`), Q5_K 13.5%, Q8_0 0.1%.
   Q5_K/Q6_K codes do not fit in 4 bits.
@@ -43,9 +45,12 @@ NPU kernels in IRON) or GGUF Q4_0/Q4_K (llama.cpp ecosystem). Facts, all checked
 3. **Q4NX-Gemma4 is our internal NPU layout, not an interchange format.** Our code packs it
    (`src/xdna_relay/formats/q4nx.py`) and validates it against IRON's `iron.operators.flm.q4nx`
    unpack/dequantize.
-4. **Oracle for GGUF decoding:** llama.cpp's `gguf-py` (MIT) `quants.py` `dequantize`, used in
-   tests only (`tests/reference/`). It is not a runtime dependency. How it is pinned and installed is
-   decided in the T-003 spec.
+4. **gguf-py (llama.cpp, MIT, pinned `gguf==0.19.0` in `requirements-npu.txt`) is a runtime
+   dependency for the container (`GGUFReader`) and for dequantizing fallback types
+   (`gguf.quants.dequantize`).** Our own code unpacks Q4_0/Q4_K into codes, scale and min (the
+   repack needs the fields, not floats). It is tested bit-exact against `gguf.quants.dequantize`.
+   (Amended 2026-11-11, same day: the first draft had gguf-py as a test-only oracle.
+   Reimplementing every GGUF dequant would duplicate it without adding an independent check.)
 
 ## Consequences
 - D3 (first model) is no longer constrained by weight format: any model with a GGUF works.
