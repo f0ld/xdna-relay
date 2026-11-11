@@ -6,7 +6,7 @@ turns into specs when their dependencies are done.
 
 ## Current
 
-- Active task: **T-001** (M0)
+- Active task: **T-002** (M1) — spec pending (Architect)
 - Operator TODOs: see `docs/knowledge/environment.md` → "Operator TODOs" (driver timeout before M2).
 
 ## M0 — Environment validated, an upstream mlir-aie example builds and runs on the NPU
@@ -14,7 +14,7 @@ turns into specs when their dependencies are done.
 Bootstrap (done by Architect, 2026-11-09): driver/firmware/XRT/memlock verified, `.venv` with
 pinned mlir-aie + Peano + IRON installed, `scripts/env-check.sh` → `ENV PASS`.
 
-- T-001 — Port upstream `vector_scalar_mul` and run it on the NPU *(spec)* — Status: REVIEW
+- T-001 — Port upstream `vector_scalar_mul` and run it on the NPU *(spec)* — Status: DONE
 
 ## M1 — Q4 GEMM correct vs PyTorch reference
 
