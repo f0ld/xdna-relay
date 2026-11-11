@@ -52,3 +52,8 @@ Architect curates.
   Q5_K 14%, Q8_0 0.1%. Only Q4_0/Q4_K go to Q4NX (ADR 0005); the rest take the bf16 fallback.
 - **gguf-py cannot quantize Q4_K/Q5_K/Q6_K** (`NotImplementedError`). Tests use random raw blocks
   with finite f16 scales (`tests/reference/gguf_files.py`).
+- **Two Q4NX block orders in IRON**: `DequantBFP` reads column blocks `(N/64, K/512, k-half,
+  n-half)`. `flm/layer/reference.py::pack_q4nx` writes `(N/64, K/256, n-half)` for the fused
+  layer kernel. Our blob (`formats/q4nx.py`) follows `DequantBFP`.
+- **bf16 rounding bound**: bf16 has 8 significant bits; RNE moves a value by ≤ 2^-8 of itself
+  (not 2^-9: the Architect got this wrong once in a test draft).

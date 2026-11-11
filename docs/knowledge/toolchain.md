@@ -114,6 +114,13 @@ factor is one int32. Upstream run line for Strix: `python vector_scalar_mul.py -
   `Precision`: `HIGHEST` = f32 partial sums, one rounding; `HIGH` = rounds per K tile;
   `MEDIUM` = bfp16 inputs. `GEMM.tolerance()` documents its bound (2 bf16 units of
   `|A| @ |B|` at HIGHEST, 4 at MEDIUM).
+- **`iron.operators.flm.dequant.op.DequantBFP(K=, N=)`** (read 2026-11-11, T-018 spec): q4nx blob →
+  bfp16ebs8 in `ProjectionGEMM.pack_b` order; aie2p only; one xclbin for every shape. Needs
+  `K % 512 == 0` (`gemm.design.K_TILE`) and `N % 64 == 0` (`N_TILE_DEFAULT`), checked at
+  resolve, not at construction. Blob order: `DequantBFP.grid(blob)` (pure numpy, runs without a
+  device) maps blob `(N/64, K/512, k-half, n-half, 5120)` → grid `(N/32, K/256, 5120)`;
+  `quantized_size()` = `N*K*5120/8192`. Its own tests round scale/min to bf16 with
+  `bf16_floor_bits`; we use RNE (smaller error); the kernel accepts any finite bf16.
 - `iron.operators.flm.ProjectionGEMM(M=..., K=..., N=..., epilogue=..., precision=..., bfp16_b=True)`,
   `op(A, op.pack_b(B), C_out)` (from `iron/operators/flm/gemm/README.md`).
   `Dequant` lives in `iron/operators/flm/dequant/op.py`. Exact constructor args: read
