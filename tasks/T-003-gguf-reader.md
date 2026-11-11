@@ -1,5 +1,5 @@
 # T-003 — GGUF reader, reference dequant, Q4_0/Q4_K field unpacking
-Status: TODO
+Status: DONE
 Milestone: M1
 Depends on: ADR 0005 (GGUF is the weight source)
 
