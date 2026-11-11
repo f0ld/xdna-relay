@@ -134,11 +134,11 @@ def _unpack_q4_k(b: np.ndarray, n: int, k: int, nb: int) -> Q4Unpacked:
     m_d = scales_raw[:, 2, :]   # GGCCCCCC / HHDDDDDD
 
     sc = np.concatenate(
-        [d_s & np.uint8(0x3F), (m_d & np.uint8(0x0F)) | ((d_s >> 2) & np.uint32(0x30))],
+        [d_s & np.uint8(0x3F), (m_d & np.uint8(0x0F)) | ((d_s >> 2) & np.uint8(0x30))],
         axis=-1,
     ).reshape(nb, 8)
     mn = np.concatenate(
-        [m_s & np.uint8(0x3F), (m_d >> 4) | ((m_s >> 2) & np.uint32(0x30))],
+        [m_s & np.uint8(0x3F), (m_d >> 4) | ((m_s >> 2) & np.uint8(0x30))],
         axis=-1,
     ).reshape(nb, 8)
 
