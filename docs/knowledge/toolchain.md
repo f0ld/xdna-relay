@@ -102,6 +102,18 @@ factor is one int32. Upstream run line for Strix: `python vector_scalar_mul.py -
   checkout; tests are not in the pip-installed package).
 - IRON op classes: `iron.common.Operator` subclasses with `build()`, `reference()`,
   `tolerance()`; calling `op(*buffers)` compiles once, then runs.
+- **`iron.operators.gemm.GEMM`** (verified on hardware 2026-11-11, T-004 spec):
+  `GEMM(M=, K=, N=, precision=iron.common.Precision.HIGHEST)`; buffers `A (M,K)`, `B (K,N)`,
+  `C (M,N)`, `ml_dtypes.bfloat16`, row-major (defaults `b_col_maj=False`, `c_col_maj=False`).
+  Call `op(A_dev, B_dev, C_dev)` with `aie.iron.tensor(...)` / `aie.iron.zeros(...)` device
+  tensors; 2-D tensors work. Construction resolves nothing; the first call compiles (0.6–8 s,
+  disk-cached), later calls ~0.5 ms at 64³. Constraints (`GEMM.validate`/`compatible`): K a
+  multiple of `tile_k` (64), N a multiple of `tile_n * num_aie_columns`, M a multiple of
+  `tile_m * rows`. All dims padded to a multiple of 64 resolved for every shape tried
+  (1³…512×4096×2048; columns auto-chosen 1–8).
+  `Precision`: `HIGHEST` = f32 partial sums, one rounding; `HIGH` = rounds per K tile;
+  `MEDIUM` = bfp16 inputs. `GEMM.tolerance()` documents its bound (2 bf16 units of
+  `|A| @ |B|` at HIGHEST, 4 at MEDIUM).
 - `iron.operators.flm.ProjectionGEMM(M=..., K=..., N=..., epilogue=..., precision=..., bfp16_b=True)`,
   `op(A, op.pack_b(B), C_out)` (from `iron/operators/flm/gemm/README.md`).
   `Dequant` lives in `iron/operators/flm/dequant/op.py`. Exact constructor args: read
