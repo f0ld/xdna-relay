@@ -27,7 +27,7 @@ class Registry:
         self._backends: dict[tuple[str, str], Backend] = {}
 
     def add_contract(self, contract: OpContract) -> None:
-        """Register an op contract. KeyError if name already added."""
+        """Register an op contract. ValueError if name already added."""
         if contract.name in self._contracts:
             raise ValueError(f"Contract name {contract.name!r} already registered")
         self._contracts[contract.name] = contract
