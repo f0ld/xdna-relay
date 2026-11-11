@@ -14,7 +14,7 @@ turns into specs when their dependencies are done.
 Bootstrap (done by Architect, 2026-11-09): driver/firmware/XRT/memlock verified, `.venv` with
 pinned mlir-aie + Peano + IRON installed, `scripts/env-check.sh` → `ENV PASS`.
 
-- T-001 — Port upstream `vector_scalar_mul` and run it on the NPU *(spec)* — Status: IN PROGRESS
+- T-001 — Port upstream `vector_scalar_mul` and run it on the NPU *(spec)* — Status: REVIEW
 
 ## M1 — Q4 GEMM correct vs PyTorch reference
 
