@@ -22,7 +22,7 @@ Approach per ADR 0004: wrap IRON's open FLM ops (Q4NX dequant → bfp16, Project
 
 - T-002 — Op contract + backend registry skeleton (`src/xdna_relay/ops/`), `ref` backend for `gemm_bf16` *(spec)* — Status: DONE
 - T-003 — Q4NX (Gemma 4 variant) pack/unpack/dequant in `src/xdna_relay/formats/q4nx.py`, vs IRON's `q4nx.dequantize` and a PyTorch reference — Status: TODO
-- T-004 — `npu` backend for `gemm_bf16` via IRON `GEMM` — correct vs ref *(spec)* — Status: TODO
+- T-004 — `npu` backend for `gemm_bf16` via IRON `GEMM` — correct vs ref *(spec)* — Status: REVIEW
 - T-005 — `q4_gemm` contract + `npu` backend via `flm.Dequant` + `flm.ProjectionGEMM`, correct vs PyTorch at prefill shapes (M ∈ {32,128,512}, K/N from a real model) — Status: TODO
 - Decision D2 (Architect): first weight format — Q4NX-Gemma4 vs GGUF Q4_0/Q4_K repack.
 

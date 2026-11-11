@@ -1,5 +1,5 @@
 # T-004 — `npu` backend for `gemm_bf16` via IRON `GEMM`
-Status: TODO
+Status: DONE
 Milestone: M1
 Depends on: T-002 (DONE)
 
