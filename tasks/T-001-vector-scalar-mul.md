@@ -1,5 +1,5 @@
 # T-001 — Port upstream vector_scalar_mul and run it on the NPU
-Status: TODO
+Status: DONE
 Milestone: M0
 Depends on: — (bootstrap done: `.venv` installed, `scripts/env-check.sh` → ENV PASS)
 
