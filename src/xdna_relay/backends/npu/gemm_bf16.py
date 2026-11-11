@@ -6,7 +6,6 @@ Zero-pads every dimension to a multiple of 64, runs IRON GEMM, then slices the r
 from __future__ import annotations
 
 import functools
-from typing import Any
 
 import numpy as np
 import torch
@@ -68,7 +67,7 @@ def gemm_bf16_npu(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     # Pad up to multiples of 64.
     mp, kp, np_ = padded_shape(m, k, n)
 
-    # Zero-padded host tensors; a[:m, :k] = a handles any strides.
+    # Zero-padded host tensors; slice assignment handles any strides.
     ap = torch.zeros(mp, kp, dtype=torch.bfloat16)
     ap[:m, :k] = a
     bp = torch.zeros(kp, np_, dtype=torch.bfloat16)
