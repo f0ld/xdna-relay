@@ -113,7 +113,8 @@ bench/            benchmark scripts, results/*.csv
 - **D1 (decide by M4):** M5 path — own runtime exporting KV to llama.cpp, **or** extend
   llama.cpp-xdna2's ggml backend (NPU prefill) and pair it with ggml-vulkan decode in one
   process. See prior-art.md.
-- **D2 (decide in M1):** weight format for the first model: Q4NX (Gemma 4 variant, open
-  kernels exist) vs GGUF Q4_0/Q4_K (llama.cpp ecosystem, needs our own repack to bfp16).
+- **D2 — decided** (ADR 0005): GGUF is the only on-disk weight source. Q4_0/Q4_K tensors
+  are repacked into the Q4NX-Gemma4 layout for IRON's `flm.Dequant` + `ProjectionGEMM`; other
+  GGUF types fall back to host dequant → `gemm_bf16`.
 - **D3 (decide in M3):** first target model. Candidates: Llama 3.2 1B (IRON reference exists,
   dense, simple) or Gemma 4 E2B (open FLM ports exist).

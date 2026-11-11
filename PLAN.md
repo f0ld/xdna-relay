@@ -6,7 +6,7 @@ turns into specs when their dependencies are done.
 
 ## Current
 
-- Active task: none — Architect decides D2 (weight format); T-003 and T-005 wait for it
+- Active task: none — Architect writes the T-003 spec next (D2 decided: ADR 0005)
 - Operator TODOs: see `docs/knowledge/environment.md` → "Operator TODOs" (driver timeout before M2).
 
 ## M0 — Environment validated, an upstream mlir-aie example builds and runs on the NPU
@@ -19,12 +19,14 @@ pinned mlir-aie + Peano + IRON installed, `scripts/env-check.sh` → `ENV PASS`.
 ## M1 — Q4 GEMM correct vs PyTorch reference
 
 Approach per ADR 0004: wrap IRON's open FLM ops (Q4NX dequant → bfp16, ProjectionGEMM).
+Weights per ADR 0005: GGUF on disk; Q4_0/Q4_K repacked to Q4NX-Gemma4 for the NPU; other types → bf16.
 
 - T-002 — Op contract + backend registry skeleton (`src/xdna_relay/ops/`), `ref` backend for `gemm_bf16` *(spec)* — Status: DONE
-- T-003 — Q4NX (Gemma 4 variant) pack/unpack/dequant in `src/xdna_relay/formats/q4nx.py`, vs IRON's `q4nx.dequantize` and a PyTorch reference — Status: TODO
+- T-003 — GGUF reader + reference dequant (`src/xdna_relay/formats/gguf.py`: Q4_0, Q4_K, Q5_K, Q6_K, Q8_0, F16, BF16, F32) vs gguf-py — Status: TODO
+- T-018 — Q4NX-Gemma4 pack (`src/xdna_relay/formats/q4nx.py`) + GGUF Q4_0/Q4_K → Q4NX repack, vs IRON's `flm.q4nx.dequantize` and the T-003 dequant — Status: TODO (after T-003)
 - T-004 — `npu` backend for `gemm_bf16` via IRON `GEMM` — correct vs ref *(spec)* — Status: DONE
-- T-005 — `q4_gemm` contract + `npu` backend via `flm.Dequant` + `flm.ProjectionGEMM`, correct vs PyTorch at prefill shapes (M ∈ {32,128,512}, K/N from a real model) — Status: TODO
-- Decision D2 (Architect): first weight format — Q4NX-Gemma4 vs GGUF Q4_0/Q4_K repack.
+- T-005 — `q4_gemm` contract (weight layout `q4nx_gemma4`) + `npu` backend via `flm.Dequant` + `flm.ProjectionGEMM`, correct vs PyTorch at prefill shapes (M ∈ {32,128,512}, K/N from a real model) — Status: TODO (after T-018)
+- Decision D2 — DONE 2026-11-11: ADR 0005 (GGUF source, Q4NX-Gemma4 on the NPU).
 
 ## M2 — Q4 GEMM fast
 
