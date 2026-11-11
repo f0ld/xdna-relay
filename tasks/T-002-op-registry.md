@@ -1,5 +1,5 @@
 # T-002 — Op contract + backend registry skeleton, `ref` backend for `gemm_bf16`
-Status: TODO
+Status: DONE
 Milestone: M1
 Depends on: T-001 (DONE)
 

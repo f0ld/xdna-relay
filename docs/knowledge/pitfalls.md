@@ -18,3 +18,18 @@ Architect curates.
   wrap vs saturate depends on the AIE saturation mode — `UNVERIFIED`. Tests keep products in
   range.
 - **`in1_size` in vector_scalar_mul is bytes, not elements.**
+
+## Testing
+
+- **`scripts/test.sh T-XXX -k "<expr>"` selects nothing or too much** → pytest `-k` matches the
+  full node id, including the file name (`test_t002_op_registry.py` contains `registr`, `op`, …).
+  Filter by words that only appear in test function names.
+
+## Op layer (`src/xdna_relay/ops/`)
+
+- **New op = new module + one import line**: define the `OpContract` and the `ref` impl in
+  `ops/<op>.py`, register into `registry.DEFAULT` at module level, and add
+  `from . import <op>` to `ops/__init__.py`. Tests use fresh `Registry()` objects for anything
+  else.
+- **`run()` errors**: bad inputs/params → `ValueError`; a backend returning the wrong
+  count/dtype/shape → `RuntimeError`; unknown op/backend → `KeyError`.
