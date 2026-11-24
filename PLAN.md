@@ -36,6 +36,14 @@ Status values: `TODO`, `IN PROGRESS`, `REVIEW`, `DONE`, `BLOCKED` (see PROTOCOL.
   logits rows, rollback(pos), kv export/import) + `NpuExecutor` over IRON `Session` +
   `RefExecutor` (PyTorch) — Status: TODO
 - T-024 — `LlamaCppExecutor` (iGPU) behind the same interface — Status: TODO
+- T-028 — Per-op profile of the IRON Llama graph (prefill and decode separately) — Status: TODO
+
+Own pieces, each an A/B against the IRON graph it replaces (Operator, 2026-11-24):
+- T-018 — Q4NX-Gemma4 pack + GGUF Q4_0/Q4_K → Q4NX repack *(spec, tests exist)* — Status: TODO
+- T-005 — `q4_gemm` npu backend via `flm.Dequant` + `flm.ProjectionGEMM` (prefill) — Status: TODO
+- T-029 — Q4 GEMV for decode (IRON Llama decode is bf16 GEMV, ~2.5 GB/token at 1B vs ~0.7 at Q4) — Status: TODO
+- T-008 — Tune q4_gemm / q4_gemv — Status: TODO
+- Small ops (norms, RoPE, eltwise) only if T-028 shows they matter.
 
 ## MS — Speculative decoding across devices
 
@@ -53,12 +61,6 @@ Status values: `TODO`, `IN PROGRESS`, `REVIEW`, `DONE`, `BLOCKED` (see PROTOCOL.
 ## MK — Kernels (only on a measured bottleneck, ADR 0006)
 
 - Candidate: NPU prefill utilisation (FLM ~4 TFLOP/s effective). Opens only with a profile.
-
-## Deferred — NPU weights from GGUF (resume if bf16 size/speed on the NPU demands it)
-
-- T-018 — Q4NX-Gemma4 pack + GGUF Q4_0/Q4_K → Q4NX repack *(spec, tests exist)* — Status: TODO
-- T-005 — `q4_gemm` npu backend via `flm.Dequant` + `flm.ProjectionGEMM` — Status: TODO
-- T-008 — Tune q4_gemm — Status: TODO
 
 ## Later
 

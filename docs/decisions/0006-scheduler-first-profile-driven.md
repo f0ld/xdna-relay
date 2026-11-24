@@ -39,8 +39,9 @@ prefix reuse need.
    Llama-family (shared tokenizer): 1B draft, 3B/8B target — final pick after T-021.
 
 ## Consequences
-- T-018 (Q4NX pack) and T-005 (q4_gemm) move to a deferred "NPU weights from GGUF" track,
-  resumed only if bf16 weight size or prefill speed on the NPU demands it.
+- Our own pieces replace parts of the IRON graph one at a time, each an A/B benchmark against
+  what it replaces. First: Q4 weights (T-018/T-005/T-029) — IRON's Llama decode reads bf16
+  weights, ~3.5x the bytes of Q4 in a bandwidth-bound phase.
 - ADRs 0001–0003 stay: contracts, the KV cache as its own component, and the scheduler
   separate from model code still hold; executors now wrap whole graphs, not single ops.
 - NPU-only decode (old M6) is demoted: the NPU's decode role is the draft model.
