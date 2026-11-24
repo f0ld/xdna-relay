@@ -6,7 +6,7 @@ Status values: `TODO`, `IN PROGRESS`, `REVIEW`, `DONE`, `BLOCKED` (see PROTOCOL.
 
 - Since 2026-11-24 the Architect implements directly (Implementer paused, ADR 0006). Tasks
   keep a done-command and tests; review files are written only for larger milestones.
-- Active task: **T-025** (MS) — prototype with FLM as the NPU draft before T-029
+- Active task: decide next step (ADR 0007: speculation stays on the iGPU; NPU = prefill + caching)
 - Power: the machine runs platform profile `low-power` (fan noise); NPU may run FLM
   `--pmode performance`. Every bench row records the profile.
 - Operator TODOs: see `docs/knowledge/environment.md` → "Operator TODOs" (driver timeout).
@@ -41,13 +41,14 @@ Status values: `TODO`, `IN PROGRESS`, `REVIEW`, `DONE`, `BLOCKED` (see PROTOCOL.
 Own pieces, each an A/B against the IRON graph it replaces (Operator, 2026-11-24):
 - T-018 — Q4NX-Gemma4 pack + GGUF Q4_0/Q4_K → Q4NX repack *(spec, tests exist)* — Status: TODO
 - T-005 — `q4_gemm` npu backend via `flm.Dequant` + `flm.ProjectionGEMM` (prefill) — Status: TODO
-- T-029 — Q4 GEMV for decode (IRON Llama decode is bf16 GEMV, ~2.5 GB/token at 1B vs ~0.7 at Q4) — Status: TODO
+- T-029 — (deprioritised, ADR 0007) Q4 GEMV for decode (IRON Llama decode is bf16 GEMV, ~2.5 GB/token at 1B vs ~0.7 at Q4) — Status: TODO
 - T-008 — Tune q4_gemm / q4_gemv — Status: TODO
 - Small ops (norms, RoPE, eltwise) only if T-028 shows they matter.
 
 ## MS — Speculative decoding across devices
 
-- T-025 — Draft on NPU, verify on iGPU (and the reverse); acceptance rate, tok/s vs T-021 — Status: TODO
+- T-025 — Draft on NPU, verify on iGPU — Status: DONE (negative, ADR 0007: ~0–10% at best; FLM unusable as draft)
+- T-030 — Adaptive draft length / per-content policy in our iGPU executor (n=3 vs 8 swings up to 2x) — Status: TODO
 - T-026 — Pipelined speculation (draft k+1.. while target verifies k); adaptive draft length
   from measured contention — Status: TODO
 
