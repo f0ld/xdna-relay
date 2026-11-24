@@ -15,3 +15,5 @@ gguf==0.19.0          # llama.cpp gguf-py: GGUF reader + dequant (ADR 0005)
 torch
 pytest
 pytest-timeout
+tokenizers==0.23.3     # IRON lm: tokenizer.json
+huggingface_hub==2.4.0 # IRON lm: HF repo ids, model downloads
