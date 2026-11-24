@@ -61,3 +61,16 @@ def npu_to_llama(src, dst, n: int | None = None, k_layout: str = "halves") -> Ha
     dst.restore(Snapshot(dst.name, tuple(src.held[:n]), np.frombuffer(blob, dtype=np.uint8)))
     t3 = time.perf_counter()
     return HandoffInfo(n, t1 - t0, t2 - t1, t3 - t2, len(blob))
+
+
+def kv_to_llama(dst, tokens: list[int], ks: list[np.ndarray], vs: list[np.ndarray]) -> HandoffInfo:
+    """Make ``dst`` hold ``tokens`` from per-layer K/V rows ``[n, row]`` already in llama.cpp's
+    channel order (e.g. from ``NpuWorker.prefill_kv``)."""
+    n = len(tokens)
+    tpl = _template(dst, tokens[0])
+    t1 = time.perf_counter()
+    blob = ls.build(ls.from_kv(tpl, ks, vs))
+    t2 = time.perf_counter()
+    dst.restore(Snapshot(dst.name, tuple(tokens), np.frombuffer(blob, dtype=np.uint8)))
+    t3 = time.perf_counter()
+    return HandoffInfo(n, 0.0, t2 - t1, t3 - t2, len(blob))

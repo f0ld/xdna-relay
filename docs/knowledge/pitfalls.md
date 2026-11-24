@@ -74,3 +74,14 @@ the interleaved layout (pairs 2j, 2j+1). Cached K rows therefore differ in chann
 `kv/llama_state.halves_to_interleaved` before import. Without it K is 140% off and decode
 produces garbage; with it K matches llama.cpp's own cache to 0.4–1.4% (bf16). V needs no
 permutation. IRON KV is readable via `model.prompt_chunk.read(layer.cache.keys)` → `(rows, kv_heads, head_dim)`.
+
+## Long IRON prompt chunks hit the driver command timeout (2026-11-24)
+Llama 3.2 3B, one 1493-row prompt chunk (`IronLmExecutor.eval`) → `RuntimeError: Llama: the run
+ended in ert_cmd_state.ERT_CMD_STATE_TIMEOUT`; kernel log `amdxdna ... aie2_set_cmd_timeout`.
+Default tdr timeout (~2 s) < chunk time. 1B at 1494 rows and 3B at 346 rows are fine. Fix:
+Operator TODO 1 (`options amdxdna tdr_timeout_ms=150000`). The NPU recovers on its own.
+
+## In-process IRON starves other threads (GIL) (2026-11-24)
+IRON's host loop keeps the GIL while the NPU runs; an iGPU decode thread in the same process
+drops from 29 to ~6 tok/s. Run the NPU executor in its own process
+(`backends/npu/worker.py: NpuWorker`).
