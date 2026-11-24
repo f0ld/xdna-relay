@@ -6,7 +6,7 @@ Status values: `TODO`, `IN PROGRESS`, `REVIEW`, `DONE`, `BLOCKED` (see PROTOCOL.
 
 - Since 2026-11-24 the Architect implements directly (Implementer paused, ADR 0006). Tasks
   keep a done-command and tests; review files are written only for larger milestones.
-- Active task: **T-019** (MP)
+- Active task: **T-025** (MS) — prototype with FLM as the NPU draft before T-029
 - Power: the machine runs platform profile `low-power` (fan noise); NPU may run FLM
   `--pmode performance`. Every bench row records the profile.
 - Operator TODOs: see `docs/knowledge/environment.md` → "Operator TODOs" (driver timeout).
@@ -23,15 +23,15 @@ Status values: `TODO`, `IN PROGRESS`, `REVIEW`, `DONE`, `BLOCKED` (see PROTOCOL.
 
 - T-019 — Contention matrix: {NPU prefill, NPU decode, idle} × {iGPU prefill, iGPU decode},
   tok/s of each side; DRAM bandwidth per device alone (replaces UNVERIFIED numbers in
-  xdna2-architecture.md; absorbs old T-007). `bench/contention.py` — Status: TODO
+  xdna2-architecture.md; absorbs old T-007). `bench/contention.py` — Status: DONE
 - T-020 — Bench harness: CSV schema, `scripts/bench.sh`, results in `bench/results/` (old T-006) — Status: TODO
 - T-021 — Baselines of existing tools: llama.cpp same-device speculative decoding (draft on
-  iGPU) and llama-server prompt cache, for the candidate model pairs; acceptance rates — Status: TODO
+  iGPU) and llama-server prompt cache, for the candidate model pairs; acceptance rates — Status: DONE
 
 ## MN — NPU executor on IRON full-model graphs
 
 - T-022 — Run IRON `applications.llama` (Llama 3.2 1B, npu2 profile) from our venv; tok/s and
-  logits vs HF reference — Status: TODO
+  logits vs HF reference — Status: DONE
 - T-023 — `sched/executor.py`: executor interface (prefill, decode, verify(k tokens) → k
   logits rows, rollback(pos), kv export/import) + `NpuExecutor` over IRON `Session` +
   `RefExecutor` (PyTorch) — Status: TODO
