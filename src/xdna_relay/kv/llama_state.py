@@ -92,20 +92,71 @@ def parse(blob) -> KVState:
     return st
 
 
+_DTYPES = {GGML_TYPE_F16: np.float16, GGML_TYPE_F32: np.float32}
+
+
+def _dtype(t: int):
+    if t in _DTYPES:
+        return np.dtype(_DTYPES[t])
+    if t == GGML_TYPE_BF16:
+        import ml_dtypes
+        return np.dtype(ml_dtypes.bfloat16)
+    raise ValueError(f"cache type {t} not supported (quantized KV?)")
+
+
+def blob_size(tpl: KVState, n: int) -> int:
+    size = 16 + 12 * n
+    if n:
+        size += 16 + sum(12 + n * L.row_bytes for L in tpl.k + tpl.v)
+    return size
+
+
+def layout(tpl: KVState, n: int, start_pos: int = 0, out=None):
+    """Write a blob's header for ``n`` cells (header fields and layer types from ``tpl``) into
+    ``out`` (a writable buffer of ``blob_size(tpl, n)`` bytes, allocated if None) and return
+    ``(blob, k_views, v_views)``: per layer typed arrays ``[n, row_elems]`` over the blob's
+    data, for the caller to fill in place (no intermediate copies)."""
+    size = blob_size(tpl, n)
+    blob = np.empty(size, np.uint8) if out is None else np.ndarray(size, np.uint8, buffer=out)
+    struct.pack_into("<IiII", blob, 0, tpl.magic, tpl.seq_id, 1, n)
+    cells = blob[16:16 + 12 * n].view(np.int32).reshape(n, 3)
+    cells[:, 0] = np.arange(start_pos, start_pos + n, dtype=np.int32)
+    cells[:, 1] = 1
+    cells[:, 2] = tpl.seq_id
+    o = 16 + 12 * n
+    kv = ([], [])
+    if n:
+        struct.pack_into("<IIII", blob, o, tpl.v_trans, len(tpl.k), tpl.n_rot_k, tpl.n_rot_v)
+        o += 16
+        for layers, views in zip((tpl.k, tpl.v), kv):
+            for L in layers:
+                struct.pack_into("<iQ", blob, o, L.type, L.row_bytes)
+                o += 12
+                dt = _dtype(L.type)
+                views.append(blob[o:o + n * L.row_bytes].view(dt).reshape(n, L.row_bytes // dt.itemsize))
+                o += n * L.row_bytes
+    assert o == size
+    return blob, kv[0], kv[1]
+
+
+def meta(st: KVState) -> KVState:
+    """``st`` without its rows: what ``layout`` needs (cheap to pickle)."""
+    return KVState(st.magic, st.seq_id, st.positions[:0], st.v_trans, st.n_rot_k, st.n_rot_v,
+                   [Layer(L.type, L.row_bytes, L.rows[:0]) for L in st.k],
+                   [Layer(L.type, L.row_bytes, L.rows[:0]) for L in st.v])
+
+
 def build(st: KVState) -> bytes:
     n = st.n_cells
-    out = [struct.pack("<IiII", st.magic, st.seq_id, 1, n)]
-    for p in st.positions:
-        out.append(struct.pack("<iIi", int(p), 1, st.seq_id))
-    if n:
-        out.append(struct.pack("<IIII", st.v_trans, len(st.k), st.n_rot_k, st.n_rot_v))
-        for layers in (st.k, st.v):
-            for L in layers:
-                if L.rows.shape != (n, L.row_bytes):
-                    raise ValueError(f"layer rows {L.rows.shape} != ({n}, {L.row_bytes})")
-                out.append(struct.pack("<iQ", L.type, L.row_bytes))
-                out.append(np.ascontiguousarray(L.rows).tobytes())
-    return b"".join(out)
+    for L in st.k + st.v:
+        if L.rows.shape != (n, L.row_bytes):
+            raise ValueError(f"layer rows {L.rows.shape} != ({n}, {L.row_bytes})")
+    blob, kv, vv = layout(st, n)
+    blob[16:16 + 12 * n].view(np.int32).reshape(n, 3)[:, 0] = st.positions
+    for layers, views in ((st.k, kv), (st.v, vv)):
+        for L, w in zip(layers, views):
+            w.view(np.uint8)[:] = L.rows
+    return blob.tobytes()
 
 
 def halves_to_interleaved(x: np.ndarray) -> np.ndarray:
@@ -136,15 +187,9 @@ def from_kv(template: KVState, keys: list[np.ndarray], values: list[np.ndarray],
         if len(src) != len(tl):
             raise ValueError(f"{len(src)} layers given, template has {len(tl)}")
         for x, L in zip(src, tl):
-            if L.type == GGML_TYPE_F16:
-                a = np.asarray(x, dtype=np.float32).astype(np.float16)
-            elif L.type == GGML_TYPE_F32:
-                a = np.asarray(x, dtype=np.float32)
-            elif L.type == GGML_TYPE_BF16:
-                import ml_dtypes
-                a = np.asarray(x, dtype=np.float32).astype(ml_dtypes.bfloat16)
-            else:
-                raise ValueError(f"cache type {L.type} not supported (quantized KV?)")
+            dt = _dtype(L.type)
+            x = np.asarray(x)
+            a = x if x.dtype == dt else x.astype(np.float32, copy=False).astype(dt)
             rows = np.ascontiguousarray(a).reshape(n, -1).view(np.uint8)
             if rows.shape[1] != L.row_bytes:
                 raise ValueError(f"row of {rows.shape[1]} bytes, cache expects {L.row_bytes}")

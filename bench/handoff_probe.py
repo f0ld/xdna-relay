@@ -40,9 +40,11 @@ def main():
     ap.add_argument("--gguf", required=True)
     ap.add_argument("--words", type=int, default=300)
     ap.add_argument("--gen", type=int, default=64)
+    ap.add_argument("--precision", help="IRON matmul precision override (high, medium)")
+    ap.add_argument("--profile-dir", help="IRON tuned profile directory (bench/iron_tune.py)")
     a = ap.parse_args()
     gpu = LlamaCppExecutor(a.gguf, n_ctx=4096)
-    npu = IronLmExecutor(a.hf, max_seq_len=2048)
+    npu = IronLmExecutor(a.hf, max_seq_len=2048, precision=a.precision, profile_dir=a.profile_dir)
     words = (TEXT * 50).split()[: a.words]
     prompt = gpu.tokenize(" ".join(words) + "\nIn one sentence, what did the keeper do on foggy nights?\n")
     assert npu.tokenize(" ".join(words)) [:5] == prompt[:5], "tokenizers disagree"
