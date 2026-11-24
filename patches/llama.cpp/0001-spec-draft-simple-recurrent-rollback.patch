@@ -1,0 +1,65 @@
+diff --git a/common/common.cpp b/common/common.cpp
+index 95a2dce..8e24c67 100644
+--- a/common/common.cpp
++++ b/common/common.cpp
+@@ -1286,7 +1286,7 @@ void common_fit_apply(common_params & params, llama_model_params & mparams, llam
+     if (spec_mtp) {
+         cparams_dft.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
+     }
+-    cparams_dft.n_rs_seq = 0;
++    cparams_dft.n_rs_seq = has_draft ? params.speculative.need_n_rs_seq() : 0;
+ 
+     const common_fit_extra_model extra = {
+         /*.path_model   =*/ params_dft.model.path.c_str(),
+diff --git a/common/common.h b/common/common.h
+index e970fb3..958d3b7 100644
+--- a/common/common.h
++++ b/common/common.h
+@@ -402,7 +402,7 @@ struct common_params_speculative {
+ 
+     uint32_t need_n_rs_seq() const {
+         bool needs_rs_seq = std::any_of(types.begin(), types.end(), [&](auto t) {
+-            return t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP || t == COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3 || t == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH || t == COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK;
++            return t == COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE || t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP || t == COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3 || t == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH || t == COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK;
+         });
+ 
+         return needs_rs_seq ? draft.n_max : 0u;
+diff --git a/common/speculative.cpp b/common/speculative.cpp
+index 14fee2b..27a277a 100644
+--- a/common/speculative.cpp
++++ b/common/speculative.cpp
+@@ -2762,7 +2762,9 @@ common_speculative_init_result::common_speculative_init_result(
+ 
+     // note: for small models maybe we can set this to the maximum possible draft from all speculative types
+     //       the extra memory for small models is likely negligible?
+-    cparams.n_rs_seq  = 0;
++    // xdna-relay: a standalone hybrid draft also processes the target's verify batch
++    // (draft_simple::process), so it needs recurrent snapshots to roll that batch back
++    cparams.n_rs_seq  = has_draft ? params.speculative.need_n_rs_seq() : 0;
+     cparams.ctx_other = ctx_tgt;
+ 
+     std::string model_path;
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 48f1e93..2b57a84 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -3859,7 +3859,8 @@ private:
+                 common_speculative_get_draft_params(spec.get(), slot.id).drafting = false;
+ 
+                 const bool use_ckpt_tgt = ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
+-                const bool use_ckpt_dft = ctx_dft_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
++                const bool use_ckpt_dft = ctx_dft_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL ||
++                    (ctx_dft_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_RS && params_base.speculative.has_dft()); // xdna-relay: drafting spans batches
+ 
+                 const int n_draft_max = slot.get_n_draft_max();
+ 
+@@ -3923,7 +3924,8 @@ private:
+             slot.stats.n_draft_tokens += draft.size();
+ 
+             // TODO: avoid restoring the draft context and re-evaluating the drafted tokens when not needed [TAG_SPEC_AVOID_DRAFT_REEVAL]
+-            const bool use_ckpt_dft = ctx_dft_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
++            const bool use_ckpt_dft = ctx_dft_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL ||
++                    (ctx_dft_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_RS && params_base.speculative.has_dft()); // xdna-relay: drafting spans batches
+ 
+             if (ctx_dft) {
+                 if (use_ckpt_dft) {

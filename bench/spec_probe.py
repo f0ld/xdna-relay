@@ -42,6 +42,7 @@ def main() -> None:
     ap.add_argument("--model", default="x")
     ap.add_argument("--label", required=True)
     ap.add_argument("--gen", type=int, default=256)
+    ap.add_argument("--dump", help="directory: write <label>-<prompt>.txt with the generated text")
     a = ap.parse_args()
     print("label,prompt,gen_tokens,decode_tps,draft_n,draft_accepted,accept_rate")
     for name, text in PROMPTS.items():
@@ -59,6 +60,11 @@ def main() -> None:
         else:
             gen, tps, dn, da = res["usage"]["completion_tokens"], res["usage"]["decoding_speed_tps"], 0, 0
         rate = da / dn if dn else 0.0
+        if a.dump:
+            import os
+            os.makedirs(a.dump, exist_ok=True)
+            with open(os.path.join(a.dump, f"{a.label.replace('/', '_')}-{name}.txt"), "w") as f:
+                f.write(res["choices"][0]["message"]["content"])
         print(f"{a.label},{name},{gen},{tps:.2f},{dn},{da},{rate:.2f}", flush=True)
 
 
