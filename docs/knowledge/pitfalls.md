@@ -66,3 +66,11 @@ on kernel 7.3.4 refuses it: `DRM_IOCTL_AMDXDNA_CREATE_BO IOCTL failed (err=-14):
 (docstring: needs amdxdna >= 2.27, xdna-driver 72e64a6). So `python -m
 iron.applications.llama.model ...` fails here. Workaround: drive steps from the host with
 `model.session.logits(tokens)` (`bench/iron_llama_probe.py`) — works with full ELF.
+
+## KV handoff IRON -> llama.cpp: K channel order (2026-11-24)
+IRON's Llama uses Hugging Face weights and RoPE in the two-halves layout (pairs j, j+D/2;
+`iron/operators/rope.py` default `two_halves=True`). GGUF conversion permutes q/k weights to
+the interleaved layout (pairs 2j, 2j+1). Cached K rows therefore differ in channel order:
+`kv/llama_state.halves_to_interleaved` before import. Without it K is 140% off and decode
+produces garbage; with it K matches llama.cpp's own cache to 0.4–1.4% (bf16). V needs no
+permutation. IRON KV is readable via `model.prompt_chunk.read(layer.cache.keys)` → `(rows, kv_heads, head_dim)`.

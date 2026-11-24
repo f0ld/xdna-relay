@@ -23,3 +23,7 @@ def require(path: Path) -> str:
 def qwen3_chat(text: str) -> str:
     """Qwen3 chat prompt, one user turn, thinking disabled (empty think block)."""
     return f"<|im_start|>user\n{text}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+
+LLAMA32_1B_HF = Path.home() / ".cache/xdna-relay/hf/Llama-3.2-1B-Instruct"
+LLAMA32_1B_BF16 = Path.home() / ".cache/xdna-relay/gguf/Llama-3.2-1B-Instruct-BF16.gguf"
+LLAMA32_1B_Q4 = Path.home() / ".local/share/contio-spike/gguf/Llama-3.2-1B-Instruct-Q4_K_M.gguf"

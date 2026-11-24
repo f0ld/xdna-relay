@@ -56,7 +56,7 @@ Own pieces, each an A/B against the IRON graph it replaces (Operator, 2026-11-24
 
 - T-009 — KV cache layout spec + `src/xdna_relay/kv/` (ADR 0002) — Status: TODO
 - T-027 — Prefix cache: live-sequence reuse + host-RAM snapshots (LRU by bytes) — Status: DONE (`scripts/test.sh T-027` 8/8; TTFT 6.3 s → 0.09–0.34 s on 2.4k-token prompts)
-- T-016 — KV handoff NPU prefill → iGPU decode (llama.cpp KV import); tokens match REF — Status: TODO
+- T-016 — KV handoff NPU prefill → iGPU decode (llama.cpp KV import); tokens match REF — Status: DONE (Llama 3.2 1B: 64/64 greedy tokens identical, KL 4.9e-4, handoff 23 ms; `scripts/test.sh T-016` 3/3)
 - T-017 — Scheduler `HYBRID`: NPU prefills request B while iGPU decodes A; TTFT/tok/s/energy vs FLM and Vulkan-only — Status: TODO
 
 ## MK — Kernels (only on a measured bottleneck, ADR 0006)
