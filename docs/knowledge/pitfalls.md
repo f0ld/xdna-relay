@@ -78,7 +78,7 @@ permutation. IRON KV is readable via `model.prompt_chunk.read(layer.cache.keys)`
 ## Long IRON prompt chunks hit the driver command timeout (2026-11-24)
 Llama 3.2 3B, one 1493-row prompt chunk (`IronLmExecutor.eval`) → `RuntimeError: Llama: the run
 ended in ert_cmd_state.ERT_CMD_STATE_TIMEOUT`; kernel log `amdxdna ... aie2_set_cmd_timeout`.
-Default tdr timeout (~2 s) < chunk time. 1B at 1494 rows and 3B at 346 rows are fine. Fix:
+Default tdr timeout (~2 s) < chunk time. 1B at 1494 rows and 3B at 346 rows are fine.
 Fix (applied 2026-11-24): `options amdxdna tdr_timeout_ms=30000` in /etc/modprobe.d/amdxdna-tdr.conf + module reload; 3B at 1494 rows then runs. The NPU recovers on its own.
 
 ## In-process IRON starves other threads (GIL) (2026-11-24)
