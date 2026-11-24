@@ -72,7 +72,18 @@ def main():
                      timing=Timing(a.rounds, a.calls, 1, 1.5), cache=Cache.here(),
                      cycles=kernel_cycles(dev), core_mhz=aie_utils.DefaultNPURuntime.core_mhz,
                      log=functools.partial(print, flush=True))
-    tuned.save(path)
+    # Profile.save cannot serialize some dimensions (Copy's TensorAccessPattern); keep the
+    # entries it can write and report the rest (docs/knowledge/pitfalls.md).
+    import json
+    kept = Profile()
+    for op_cls, matched, tunables in tuned:
+        try:
+            json.dumps({**matched, **tunables})
+        except TypeError:
+            print(f"not saved (dimensions not JSON): {op_cls.__name__} {tunables}")
+            continue
+        kept.add(op_cls, **matched, **tunables)
+    kept.save(path)
     print(f"wrote {path}")
 
 

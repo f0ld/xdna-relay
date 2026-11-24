@@ -36,7 +36,7 @@ Status values: `TODO`, `IN PROGRESS`, `REVIEW`, `DONE`, `BLOCKED` (see PROTOCOL.
   logits rows, rollback(pos), kv export/import) + `NpuExecutor` over IRON `Session` +
   `RefExecutor` (PyTorch) — Status: IN PROGRESS (interface `sched/executor.py` done; NPU/Ref executors and KV export/import open)
 - T-024 — `LlamaCppExecutor` (iGPU) behind the same interface — Status: DONE (`scripts/test.sh T-024` 6/6)
-- T-028 — Per-op profile of the IRON Llama graph (prefill and decode separately) — Status: TODO
+- T-028 — Per-op profile of the IRON Llama graph (prefill and decode separately) — Status: IN PROGRESS
 
 Own pieces, each an A/B against the IRON graph it replaces (Operator, 2026-11-24):
 - T-018 — Q4NX-Gemma4 pack + GGUF Q4_0/Q4_K → Q4NX repack *(spec, tests exist)* — Status: TODO
@@ -57,7 +57,7 @@ Own pieces, each an A/B against the IRON graph it replaces (Operator, 2026-11-24
 - T-009 — KV cache layout spec + `src/xdna_relay/kv/` (ADR 0002) — Status: TODO
 - T-027 — Prefix cache: live-sequence reuse + host-RAM snapshots (LRU by bytes) — Status: DONE (`scripts/test.sh T-027` 8/8; TTFT 6.3 s → 0.09–0.34 s on 2.4k-token prompts)
 - T-016 — KV handoff NPU prefill → iGPU decode (llama.cpp KV import); tokens match REF — Status: DONE (Llama 3.2 1B: 64/64 greedy tokens identical, KL 4.9e-4, handoff 23 ms; `scripts/test.sh T-016` 3/3)
-- T-017 — Scheduler `HYBRID`: NPU prefills request B while iGPU decodes A — Status: IN PROGRESS (1B: A keeps 22 vs 6 tok/s, B TTFT −35%; 3B with tdr_timeout_ms=30000: A keeps 28 vs 5–7 tok/s, makespan −6%, but B TTFT 5.8 vs 1.9 s — IRON 3B prefill is the bottleneck; handoff 690 ms to profile)
+- T-017 — Scheduler `HYBRID`: NPU prefills request B while iGPU decodes A — Status: IN PROGRESS (1B: A keeps 22 vs 6 tok/s, B TTFT −35%; 3B at IRON medium precision + shm blob handoff: A keeps 20 vs 6–8 tok/s, B TTFT 2.4 vs 2.1–2.2 s, makespan −8%)
 
 ## MK — Kernels (only on a measured bottleneck, ADR 0006)
 

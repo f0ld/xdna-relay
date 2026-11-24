@@ -85,3 +85,13 @@ Fix (applied 2026-11-24): `options amdxdna tdr_timeout_ms=30000` in /etc/modprob
 IRON's host loop keeps the GIL while the NPU runs; an iGPU decode thread in the same process
 drops from 29 to ~6 tok/s. Run the NPU executor in its own process
 (`backends/npu/worker.py: NpuWorker`).
+
+## IRON autotune: standalone gains do not transfer to the graph (2026-11-24)
+`bench/iron_tune.py` (IRON's `autotune`, timed at rows=2048) chose MHA `B_q=32, pv_cores=2`
+for Llama 3B (−4.75 ms/call standalone); in the real prompt graph at 1494 rows the chunk went
+1.61 s → 4.74 s. Cause UNVERIFIED (rows/kv_len bound differs from the timed point?). Always
+A/B a tuned profile with a real eval before keeping it. IRON's shipped llama `npu2.json`
+already has 3B entries.
+`iron.common.declare.Profile.save` raises `TypeError: ... TensorAccessPattern is not JSON
+serializable` for profiles holding Copy entries (also GEMM's b_dtype/epilogue objects): the
+tuner's result is lost unless those entries are filtered out first.

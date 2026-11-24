@@ -46,3 +46,23 @@ A alone 35 tok/s.
 | **NPU medium, blob in shm** | **20.1** | **25.6** | **2.39 s** | **7.88–7.89 s** |
 
 Worker breakdown (last row): NPU eval 2.12 s, KV read 5 ms, pack 150 ms, import 33 ms.
+
+## Autotuning the 3B prompt shapes (`bench/iron_tune.py`, IRON's tuner, medium): no gain
+The shipped `npu2.json` already holds 3B prompt entries (seven shapes; not only 1B's).
+The tuner (at rows=2048, standalone) reported gains for MHA (−4.75 ms/call), Add, SiLU, Mul,
+LM-head GEMV and the KV Copy; GEMMs kept their defaults. In the real graph (1494-token eval,
+no iGPU load, NPU pmode `default`), swapping the tuned entries into the shipped profile:
+| swapped in | eval 1493 tokens |
+|---|---|
+| none (shipped) | **1.61 s (~930 tok/s)** |
+| MHA (B_q 32, pv_cores 2, 8 pipelines) | 4.74 s |
+| Add, SiLU, Mul | 1.61 s |
+| GEMV, RMSNorm | 1.61 s |
+| Gather, RoPE, Sample (new entries) | 1.61 s |
+Tuned profile discarded. Also `Profile.save` cannot write entries whose dimensions are
+objects (Copy's TensorAccessPattern, GEMM's dtype/epilogue): see pitfalls.
+
+## Where 3B NPU prefill stands
+1493 tokens in 1.61 s standalone (iGPU Q4_K_M alone ~2.0 s), ~2.1 s while the iGPU decodes.
+Remaining per-chunk: GEMMs ~0.89 s at bfp16 (13 TFLOPS on the big ones), MHA 0.58 s, rest
+~0.14 s. NPU power mode is `default`; `performance` needs root (untested).
