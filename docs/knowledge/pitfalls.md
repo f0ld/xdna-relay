@@ -57,3 +57,12 @@ Architect curates.
   layer kernel. Our blob (`formats/q4nx.py`) follows `DequantBFP`.
 - **bf16 rounding bound**: bf16 has 8 significant bits; RNE moves a value by ≤ 2^-8 of itself
   (not 2^-9: the Architect got this wrong once in a test draft).
+
+## IRON device loop needs a newer amdxdna (2026-11-24)
+`Session.draw` / `Model.stream` with a full-ELF decode step run IRON's device-side sampling
+loop, which aliases a parameter scratchpad as a user-pointer BO
+(`mlir_aie/.../parameter_scratchpad.py: ParameterScratchpad.alias`). The in-kernel amdxdna
+on kernel 7.3.4 refuses it: `DRM_IOCTL_AMDXDNA_CREATE_BO IOCTL failed (err=-14): Bad address`
+(docstring: needs amdxdna >= 2.27, xdna-driver 72e64a6). So `python -m
+iron.applications.llama.model ...` fails here. Workaround: drive steps from the host with
+`model.session.logits(tokens)` (`bench/iron_llama_probe.py`) — works with full ELF.
