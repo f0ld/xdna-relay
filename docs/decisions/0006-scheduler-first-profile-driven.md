@@ -16,7 +16,9 @@ Measured on this machine (Qwen3.5-4B, Q4, platform profile `low-power`, `bench/r
 | concurrent | 14.6 | 9.5 | 305 | 327 |
 
 Decode is DRAM-bandwidth bound: ~2.7 GB/token, ~55 GB/s iGPU alone, ~65 GB/s for the whole
-SoC with both busy. Splitting decode across devices gains ~18%; no decode kernel can move
+SoC with both busy — confirmed in the `performance` profile (decode vs decode −37% with no
+clock throttling, `bench/results/2026-11-24-performance-battery.md`). Prefill contention under
+`low-power` is mostly the ~15 W package power cap. Power profile is therefore a scheduler input. Splitting decode across devices gains ~18%; no decode kernel can move
 that ceiling. The levers are fewer bytes per token (speculative decoding), skipped work
 (prefix/KV caching), and overlapping compute-bound NPU prefill with iGPU decode.
 
