@@ -19,3 +19,15 @@ def npu():
     except ImportError as e:
         pytest.fail(f"pyxrt not importable ({e}); run tests via scripts/test.sh")
     return "npu2"
+
+
+@pytest.fixture(scope="session")
+def igpu():
+    """Fail (never skip) when the iGPU path (llama.cpp shim + Vulkan) is not usable."""
+    from tests.reference.models import SHIM
+
+    if not SHIM.exists():
+        pytest.fail(f"{SHIM} missing: run scripts/build-llama-shim.sh")
+    if not os.path.exists("/dev/dri/renderD128"):
+        pytest.fail("/dev/dri/renderD128 missing: no GPU render node")
+    return "vulkan"

@@ -6,7 +6,7 @@ Status values: `TODO`, `IN PROGRESS`, `REVIEW`, `DONE`, `BLOCKED` (see PROTOCOL.
 
 - Since 2026-11-24 the Architect implements directly (Implementer paused, ADR 0006). Tasks
   keep a done-command and tests; review files are written only for larger milestones.
-- Active task: decide next step (ADR 0007: speculation stays on the iGPU; NPU = prefill + caching)
+- Active task: **T-027** prefix cache (next), then NPU prefill + KV handoff (T-016/T-017)
 - Power: the machine runs platform profile `low-power` (fan noise); NPU may run FLM
   `--pmode performance`. Every bench row records the profile.
 - Operator TODOs: see `docs/knowledge/environment.md` → "Operator TODOs" (driver timeout).
@@ -34,8 +34,8 @@ Status values: `TODO`, `IN PROGRESS`, `REVIEW`, `DONE`, `BLOCKED` (see PROTOCOL.
   logits vs HF reference — Status: IN PROGRESS (runs, 13.4 tok/s decode; logits check vs reference open)
 - T-023 — `sched/executor.py`: executor interface (prefill, decode, verify(k tokens) → k
   logits rows, rollback(pos), kv export/import) + `NpuExecutor` over IRON `Session` +
-  `RefExecutor` (PyTorch) — Status: TODO
-- T-024 — `LlamaCppExecutor` (iGPU) behind the same interface — Status: TODO
+  `RefExecutor` (PyTorch) — Status: IN PROGRESS (interface `sched/executor.py` done; NPU/Ref executors and KV export/import open)
+- T-024 — `LlamaCppExecutor` (iGPU) behind the same interface — Status: DONE (`scripts/test.sh T-024` 6/6)
 - T-028 — Per-op profile of the IRON Llama graph (prefill and decode separately) — Status: TODO
 
 Own pieces, each an A/B against the IRON graph it replaces (Operator, 2026-11-24):
@@ -48,7 +48,7 @@ Own pieces, each an A/B against the IRON graph it replaces (Operator, 2026-11-24
 ## MS — Speculative decoding across devices
 
 - T-025 — Draft on NPU, verify on iGPU — Status: DONE (negative, ADR 0007: ~0–10% at best; FLM unusable as draft)
-- T-030 — Adaptive draft length / per-content policy in our iGPU executor (n=3 vs 8 swings up to 2x) — Status: TODO
+- T-030 — Adaptive draft length in our speculative loop — Status: DONE (`scripts/test.sh T-030`; Qwen3-8B 15.5 → ~25 tok/s; open: under-picks k on code)
 - T-026 — Pipelined speculation (draft k+1.. while target verifies k); adaptive draft length
   from measured contention — Status: TODO
 

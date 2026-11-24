@@ -46,3 +46,15 @@ Qwen3.5-0.8B Q8_0 decodes at 62 tok/s vs the 4B at 21 → each drafted token cos
 target step on the same device. That ratio, not verify, bounds same-device speedup; moving
 the draft to the NPU (concurrent) removes it from the iGPU's critical path at the price of
 the bandwidth contention measured in T-019.
+
+## Our loop (`src/xdna_relay/sched/speculative.py`, 2026-11-24)
+- llama.cpp is driven through `native/llama_shim` (plain C ABI; `llama_get_logits_ith`
+  takes the **batch index** of the token, not the output-row index — a single-row eval of m
+  tokens reads index m-1).
+- Draft catch-up: the draft never evaluates the verify batch; at the start of a round it
+  feeds the tokens it lacks (1 normally, 2 after a fully accepted round, many after plain
+  rounds). Don't let the many-token case feed the per-round cost model.
+- EOG can arrive as an accepted draft token mid-round; stop there (bug found in review of
+  the first version: generation ran past EOG).
+- Batch-split numerics on llama.cpp Vulkan: same argmax, KL <= 4.7e-3, single logits move
+  up to ~0.65 (Qwen3-0.6B/8B). Compare distributions (KL), not raw logits.
