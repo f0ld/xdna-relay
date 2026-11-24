@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
-from xdna_relay.sched.executor import Executor, Rows
+from xdna_relay.sched.executor import Executor, Rows, Snapshot
 
 _LIB = None
 _DEFAULT = Path(__file__).resolve().parents[4] / "build" / "native" / "libllama_shim.so"
@@ -39,6 +39,9 @@ def _lib() -> C.CDLL:
             "rl_clear": (None, [P]),
             "rl_pos_max": (I, [P]),
             "rl_synchronize": (None, [P]),
+            "rl_state_size": (C.c_size_t, [P]),
+            "rl_state_get": (C.c_size_t, [P, C.c_void_p, C.c_size_t]),
+            "rl_state_set": (C.c_size_t, [P, C.c_void_p, C.c_size_t]),
         }
         for name, (res, args) in sig.items():
             fn = getattr(lib, name)
@@ -62,6 +65,7 @@ class LlamaCppExecutor(Executor):
         self.n_batch = n_batch
         self.n_ctx = n_ctx
         self.n_past = 0
+        self.held: list[int] = []  # the tokens the sequence holds (len == n_past)
         self._rows_tok = (C.c_int * n_batch)()
         self._rows_gap = (C.c_float * n_batch)()
 
@@ -87,6 +91,7 @@ class LlamaCppExecutor(Executor):
         if rc != 0:
             raise RuntimeError(f"llama_decode failed: {rc}")
         self.n_past += n
+        self.held.extend(int(t) for t in tokens)
         k = self._l.rl_argmax_rows(self._h, self._rows_tok, self._rows_gap)
         return Rows(np.frombuffer(self._rows_tok, dtype=np.int32, count=k).copy(),
                     np.frombuffer(self._rows_gap, dtype=np.float32, count=k).copy())
@@ -107,6 +112,26 @@ class LlamaCppExecutor(Executor):
         elif not self._l.rl_truncate(self._h, n_keep):
             raise RuntimeError(f"{self.name}: memory cannot roll back to {n_keep} (recurrent model without n_rs_seq?)")
         self.n_past = n_keep
+        del self.held[n_keep:]
+
+    def snapshot(self) -> Snapshot:
+        """Copy the sequence state (KV cache) to host memory."""
+        size = self._l.rl_state_size(self._h)
+        buf = np.empty(size, dtype=np.uint8)
+        got = self._l.rl_state_get(self._h, buf.ctypes.data, size)
+        if got != size:
+            raise RuntimeError(f"state copy returned {got} of {size} bytes")
+        return Snapshot(self.name, tuple(self.held), buf)
+
+    def restore(self, snap: Snapshot) -> None:
+        """Replace the sequence with ``snap`` (taken from an executor of the same model)."""
+        if snap.model != self.name:
+            raise ValueError(f"snapshot of {snap.model} restored into {self.name}")
+        got = self._l.rl_state_set(self._h, snap.data.ctypes.data, snap.data.size)
+        if got == 0:
+            raise RuntimeError("state restore failed")
+        self.n_past = len(snap.tokens)
+        self.held = list(snap.tokens)
 
     def tokenize(self, text: str, add_special: bool = True) -> list[int]:
         b = text.encode()

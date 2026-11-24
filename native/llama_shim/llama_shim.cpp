@@ -177,4 +177,20 @@ int rl_pos_max(void * p) {
 
 void rl_synchronize(void * p) { llama_synchronize(static_cast<Handle *>(p)->ctx); }
 
+// Whole-sequence state (KV cache, recurrent state) of seq 0, for the host-RAM prefix cache.
+size_t rl_state_size(void * p) {
+    return llama_state_seq_get_size(static_cast<Handle *>(p)->ctx, 0);
+}
+
+size_t rl_state_get(void * p, uint8_t * dst, size_t size) {
+    return llama_state_seq_get_data(static_cast<Handle *>(p)->ctx, dst, size, 0);
+}
+
+// Replaces seq 0 with the snapshot. Returns bytes read (0 = failure).
+size_t rl_state_set(void * p, const uint8_t * src, size_t size) {
+    auto * h = static_cast<Handle *>(p);
+    llama_memory_seq_rm(llama_get_memory(h->ctx), 0, -1, -1);
+    return llama_state_seq_set_data(h->ctx, src, size, 0);
+}
+
 }  // extern "C"

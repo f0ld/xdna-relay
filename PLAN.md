@@ -6,7 +6,7 @@ Status values: `TODO`, `IN PROGRESS`, `REVIEW`, `DONE`, `BLOCKED` (see PROTOCOL.
 
 - Since 2026-11-24 the Architect implements directly (Implementer paused, ADR 0006). Tasks
   keep a done-command and tests; review files are written only for larger milestones.
-- Active task: **T-027** prefix cache (next), then NPU prefill + KV handoff (T-016/T-017)
+- Active task: **T-016/T-017** NPU prefill + KV handoff (design next: ADR on KV format / model pair)
 - Power: the machine runs platform profile `low-power` (fan noise); NPU may run FLM
   `--pmode performance`. Every bench row records the profile.
 - Operator TODOs: see `docs/knowledge/environment.md` → "Operator TODOs" (driver timeout).
@@ -55,7 +55,7 @@ Own pieces, each an A/B against the IRON graph it replaces (Operator, 2026-11-24
 ## MC — Caching and the KV component
 
 - T-009 — KV cache layout spec + `src/xdna_relay/kv/` (ADR 0002) — Status: TODO
-- T-027 — Prefix cache: token-trie of KV blocks, reuse across requests, eviction — Status: TODO
+- T-027 — Prefix cache: live-sequence reuse + host-RAM snapshots (LRU by bytes) — Status: DONE (`scripts/test.sh T-027` 8/8; TTFT 6.3 s → 0.09–0.34 s on 2.4k-token prompts)
 - T-016 — KV handoff NPU prefill → iGPU decode (llama.cpp KV import); tokens match REF — Status: TODO
 - T-017 — Scheduler `HYBRID`: NPU prefills request B while iGPU decodes A; TTFT/tok/s/energy vs FLM and Vulkan-only — Status: TODO
 

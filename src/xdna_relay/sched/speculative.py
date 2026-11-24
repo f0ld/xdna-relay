@@ -21,6 +21,7 @@ import time
 from dataclasses import dataclass, field
 
 from .executor import Executor
+from .prefix_cache import PrefillInfo, PrefixCache, prefill
 
 
 @dataclass
@@ -114,6 +115,8 @@ class GenStats:
     t_verify: float = 0.0
     t_total: float = 0.0
     ks: list[int] = field(default_factory=list)
+    prefill: PrefillInfo | None = None
+    prefill_draft: PrefillInfo | None = None
 
     @property
     def decode_tps(self) -> float:
@@ -122,22 +125,24 @@ class GenStats:
 
 
 def generate(target: Executor, prompt: list[int], max_tokens: int, draft: Executor | None = None,
-             policy: AdaptiveK | None = None) -> GenStats:
+             policy: AdaptiveK | None = None, cache: PrefixCache | None = None) -> GenStats:
     """Greedy generation of up to ``max_tokens`` after ``prompt``; speculative when ``draft`` is given.
 
-    Both executors are reset first. Stops at an end-of-generation token (included).
+    Prefill reuses what the executors still hold, and ``cache`` snapshots when given
+    (``prefix_cache.prefill``). Stops at an end-of-generation token (included).
     """
     policy = policy or AdaptiveK(fixed=None if draft else 0)
     st = GenStats()
     t0 = time.perf_counter()
-    target.reset()
-    rows = target.eval(prompt)
+    # snapshots are taken after generation (off the TTFT path; they then include the answer)
+    rows, st.prefill = prefill(target, prompt, cache, store=False)
     seq = list(prompt) + [int(rows.tokens[-1])]
     st.tokens.append(seq[-1])
     if draft is not None:
-        draft.reset()
         if len(prompt) > 1:
-            draft.eval(prompt[:-1])
+            _, st.prefill_draft = prefill(draft, prompt[:-1], cache, store=False)
+        else:
+            draft.reset()
     st.t_prefill = time.perf_counter() - t0
 
     while len(st.tokens) < max_tokens and not target.is_eog(seq[-1]):
@@ -184,4 +189,8 @@ def generate(target: Executor, prompt: list[int], max_tokens: int, draft: Execut
             break
     st.tokens = st.tokens[:max_tokens]
     st.t_total = time.perf_counter() - t0
+    if cache is not None:
+        for ex in (target, draft):
+            if ex is not None:
+                cache.put(ex.snapshot())
     return st

@@ -20,11 +20,25 @@ class Rows:
     gaps: np.ndarray  # float32 [rows]
 
 
+@dataclass
+class Snapshot:
+    """A sequence's device state copied to host memory, for the prefix cache."""
+
+    model: str  # executor name; restore only into the same model
+    tokens: tuple[int, ...]
+    data: np.ndarray  # opaque bytes (uint8)
+
+    @property
+    def nbytes(self) -> int:
+        return int(self.data.nbytes)
+
+
 class Executor(ABC):
     """One model, one sequence, on one device."""
 
     name: str
     n_past: int  # tokens the sequence holds (positions 0..n_past-1)
+    held: list[int]  # those tokens
 
     @abstractmethod
     def eval(self, tokens: list[int], all_logits: bool = False) -> Rows:
@@ -49,6 +63,12 @@ class Executor(ABC):
 
     @abstractmethod
     def is_eog(self, token: int) -> bool: ...
+
+    @abstractmethod
+    def snapshot(self) -> Snapshot: ...
+
+    @abstractmethod
+    def restore(self, snap: Snapshot) -> None: ...
 
     def reset(self) -> None:
         self.truncate(0)
