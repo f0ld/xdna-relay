@@ -23,7 +23,15 @@ Vulkan build), our patched clone at `~/.cache/xdna-relay/llama.cpp` (branch `xdn
   to full checkpoints: each cycle saves ~70 MB of state, and every partial rejection restores
   it and **replays** the accepted tokens (`spec_is_replay`, `tools/server/server-context.cpp`)
   → about one extra target forward pass per cycle.
-- Our patch adds `COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE` to that list (one line).
+- `draft-simple` feeds the target's verify batch to the draft context too
+  (`common_speculative_impl_draft_simple::process`), so a hybrid draft model needs snapshots
+  for that batch; its own drafting is token-by-token (several batches), which snapshots
+  cannot undo (`llama_memory_recurrent::seq_rm`: "bounded by the snapshots of the last
+  ubatch") → it also needs its checkpoint. Giving only one of the two aborts with
+  "failed to remove sequence".
+- Fix: `patches/llama.cpp/0001-spec-draft-simple-recurrent-rollback.patch` (+5–11% vs stock).
+- Greedy spec decoding is not bit-identical to plain decoding here: batched verify vs
+  single-token float differences flip near-ties (seen with stock llama.cpp too).
 
 ## Verify cost on the iGPU (llama-bench, Vulkan, performance profile)
 Forward time vs batch size — small batches are almost free, so verify is not the problem:
