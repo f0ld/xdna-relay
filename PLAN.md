@@ -1,65 +1,65 @@
 # PLAN
 
 Status values: `TODO`, `IN PROGRESS`, `REVIEW`, `DONE`, `BLOCKED` (see PROTOCOL.md §6).
-Task specs exist only for tasks marked *(spec)*; the rest are planned titles the Architect
-turns into specs when their dependencies are done.
 
 ## Current
 
-- Active task: **T-018** (M1)
-- Operator TODOs: see `docs/knowledge/environment.md` → "Operator TODOs" (driver timeout before M2).
+- Since 2026-11-24 the Architect implements directly (Implementer paused, ADR 0006). Tasks
+  keep a done-command and tests; review files are written only for larger milestones.
+- Active task: **T-019** (MP)
+- Power: the machine runs platform profile `low-power` (fan noise); NPU may run FLM
+  `--pmode performance`. Every bench row records the profile.
+- Operator TODOs: see `docs/knowledge/environment.md` → "Operator TODOs" (driver timeout).
 
-## M0 — Environment validated, an upstream mlir-aie example builds and runs on the NPU
+## Done (foundation)
 
-Bootstrap (done by Architect, 2026-11-09): driver/firmware/XRT/memlock verified, `.venv` with
-pinned mlir-aie + Peano + IRON installed, `scripts/env-check.sh` → `ENV PASS`.
+- T-001 — upstream `vector_scalar_mul` on the NPU — DONE
+- T-002 — op contract + backend registry, `ref` backend for `gemm_bf16` — DONE
+- T-003 — GGUF reader + reference dequant — DONE
+- T-004 — `npu` backend for `gemm_bf16` via IRON `GEMM` — DONE
+- Baseline probe 2026-11-24: FLM vs llama.cpp Vulkan, alone and concurrent (ADR 0006).
 
-- T-001 — Port upstream `vector_scalar_mul` and run it on the NPU *(spec)* — Status: DONE
+## MP — Profile (what limits us)
 
-## M1 — Q4 GEMM correct vs PyTorch reference
+- T-019 — Contention matrix: {NPU prefill, NPU decode, idle} × {iGPU prefill, iGPU decode},
+  tok/s of each side; DRAM bandwidth per device alone (replaces UNVERIFIED numbers in
+  xdna2-architecture.md; absorbs old T-007). `bench/contention.py` — Status: TODO
+- T-020 — Bench harness: CSV schema, `scripts/bench.sh`, results in `bench/results/` (old T-006) — Status: TODO
+- T-021 — Baselines of existing tools: llama.cpp same-device speculative decoding (draft on
+  iGPU) and llama-server prompt cache, for the candidate model pairs; acceptance rates — Status: TODO
 
-Approach per ADR 0004: wrap IRON's open FLM ops (Q4NX dequant → bfp16, ProjectionGEMM).
-Weights per ADR 0005: GGUF on disk; Q4_0/Q4_K repacked to Q4NX-Gemma4 for the NPU; other types → bf16.
+## MN — NPU executor on IRON full-model graphs
 
-- T-002 — Op contract + backend registry skeleton (`src/xdna_relay/ops/`), `ref` backend for `gemm_bf16` *(spec)* — Status: DONE
-- T-003 — GGUF reader + reference dequant (`src/xdna_relay/formats/gguf.py`: Q4_0, Q4_K, Q5_K, Q6_K, Q8_0, F16, BF16, F32) vs gguf-py *(spec)* — Status: DONE
-- T-018 — Q4NX-Gemma4 pack (`src/xdna_relay/formats/q4nx.py`) + GGUF Q4_0/Q4_K → Q4NX repack, vs IRON's `flm.q4nx.dequantize` and the T-003 dequant *(spec)* — Status: TODO
-- T-004 — `npu` backend for `gemm_bf16` via IRON `GEMM` — correct vs ref *(spec)* — Status: DONE
-- T-005 — `q4_gemm` contract (weight layout `q4nx_gemma4`) + `npu` backend via `flm.Dequant` + `flm.ProjectionGEMM`, correct vs PyTorch at prefill shapes (M ∈ {32,128,512}, K/N from a real model) — Status: TODO (after T-018)
-- Decision D2 — DONE 2026-11-11: ADR 0005 (GGUF source, Q4NX-Gemma4 on the NPU).
+- T-022 — Run IRON `applications.llama` (Llama 3.2 1B, npu2 profile) from our venv; tok/s and
+  logits vs HF reference — Status: TODO
+- T-023 — `sched/executor.py`: executor interface (prefill, decode, verify(k tokens) → k
+  logits rows, rollback(pos), kv export/import) + `NpuExecutor` over IRON `Session` +
+  `RefExecutor` (PyTorch) — Status: TODO
+- T-024 — `LlamaCppExecutor` (iGPU) behind the same interface — Status: TODO
 
-## M2 — Q4 GEMM fast
+## MS — Speculative decoding across devices
 
-- T-006 — Bench harness (`bench/`, CSV schema in `scripts/bench.sh`) + naive baseline (CPU dequant + NPU bf16 GEMM) — Status: TODO
-- T-007 — Measure NPU DRAM bandwidth and dispatch overhead on this machine (replace the UNVERIFIED numbers in xdna2-architecture.md) — Status: TODO
-- T-008 — Tune q4_gemm (IRON autotune profile, weight-resident B, tile_n/k_tile) and compare with `flm bench` where comparable — Status: TODO
-- Requires Operator TODO 1 (tdr_timeout_ms).
+- T-025 — Draft on NPU, verify on iGPU (and the reverse); acceptance rate, tok/s vs T-021 — Status: TODO
+- T-026 — Pipelined speculation (draft k+1.. while target verifies k); adaptive draft length
+  from measured contention — Status: TODO
 
-## M3 — One transformer layer (prefill) correct
+## MC — Caching and the KV component
 
-- T-009 — KV cache layout spec `docs/knowledge/kv-cache-layout.md` + `src/xdna_relay/kv/` (Architect writes spec; Implementer the component) — Status: TODO
-- T-010 — Contracts + npu backends: RMSNorm, RoPE, SiLU/GELU-mul, residual add (IRON ops) — Status: TODO
-- T-011 — Prefill attention (causal, GQA) via IRON `mha` or `flm.prefill_attn`, writing KV through the layout — Status: TODO
-- T-012 — One decoder layer of the target model (Decision D3) on NPU vs HF/PyTorch layer output — Status: TODO
+- T-009 — KV cache layout spec + `src/xdna_relay/kv/` (ADR 0002) — Status: TODO
+- T-027 — Prefix cache: token-trie of KV blocks, reuse across requests, eviction — Status: TODO
+- T-016 — KV handoff NPU prefill → iGPU decode (llama.cpp KV import); tokens match REF — Status: TODO
+- T-017 — Scheduler `HYBRID`: NPU prefills request B while iGPU decodes A; TTFT/tok/s/energy vs FLM and Vulkan-only — Status: TODO
 
-## M4 — Full-model prefill on the NPU
+## MK — Kernels (only on a measured bottleneck, ADR 0006)
 
-- T-013 — Model graph + REF executor end-to-end (logits match HF) — Status: TODO
-- T-014 — NPU executor: full prefill, last-token logits vs REF; TTFT bench — Status: TODO
-- Decision D1 (Architect): M5 path (own runtime + KV export vs ggml-xdna2 + ggml-vulkan).
+- Candidate: NPU prefill utilisation (FLM ~4 TFLOP/s effective). Opens only with a profile.
 
-## M5 — KV-cache handoff to llama.cpp decode on the iGPU
+## Deferred — NPU weights from GGUF (resume if bf16 size/speed on the NPU demands it)
 
-- T-015 — llama.cpp Vulkan build on the 890M, decode bench for the target model — Status: TODO
-- T-016 — KV export into llama.cpp's KV tensors; decode continues and matches REF tokens — Status: TODO
-- T-017 — Scheduler `HYBRID` mode end-to-end + TTFT/tok/s/energy bench vs FLM and Vulkan-only — Status: TODO
+- T-018 — Q4NX-Gemma4 pack + GGUF Q4_0/Q4_K → Q4NX repack *(spec, tests exist)* — Status: TODO
+- T-005 — `q4_gemm` npu backend via `flm.Dequant` + `flm.ProjectionGEMM` — Status: TODO
+- T-008 — Tune q4_gemm — Status: TODO
 
-## M6 — Decode on the NPU (later; coarse)
+## Later
 
-GEMV / matrix-vector kernels (IRON `gemv`, xdna-engine int8×int4 ideas), KV stays on NPU,
-`NPU_ONLY` executor for decode, fused dispatch to cut per-token commands.
-
-## M7 — Own OpenAI-compatible server + scheduler (later; coarse)
-
-`/v1/chat/completions` + `/v1/models`, scheduler modes `NPU_ONLY` and `HYBRID`, request queue,
-prompt cache, bench vs FLM and llama.cpp.
+- M7 — Own OpenAI-compatible server (`/v1/chat/completions`, `/v1/models`) over the scheduler; bench vs FLM and llama.cpp.

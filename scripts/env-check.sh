@@ -16,7 +16,7 @@ echo "xdna-relay env-check ($(date -Iseconds))"
 
 ok kernel "$(uname -r)"
 
-if lsmod | grep -q '^amdxdna'; then ok amdxdna "module loaded"; else bad amdxdna "module not loaded"; fi
+if grep -q '^amdxdna ' /proc/modules; then ok amdxdna "module loaded"; else bad amdxdna "module not loaded"; fi
 
 if [ -c /dev/accel/accel0 ]; then
     if [ -r /dev/accel/accel0 ] && [ -w /dev/accel/accel0 ]; then
