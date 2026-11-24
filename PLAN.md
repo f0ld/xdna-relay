@@ -26,12 +26,12 @@ Status values: `TODO`, `IN PROGRESS`, `REVIEW`, `DONE`, `BLOCKED` (see PROTOCOL.
   xdna2-architecture.md; absorbs old T-007). `bench/contention.py` — Status: DONE
 - T-020 — Bench harness: CSV schema, `scripts/bench.sh`, results in `bench/results/` (old T-006) — Status: TODO
 - T-021 — Baselines of existing tools: llama.cpp same-device speculative decoding (draft on
-  iGPU) and llama-server prompt cache, for the candidate model pairs; acceptance rates — Status: DONE
+  iGPU) and llama-server prompt cache, for the candidate model pairs; acceptance rates — Status: IN PROGRESS (spec decode done; prompt-cache baseline open)
 
 ## MN — NPU executor on IRON full-model graphs
 
 - T-022 — Run IRON `applications.llama` (Llama 3.2 1B, npu2 profile) from our venv; tok/s and
-  logits vs HF reference — Status: DONE
+  logits vs HF reference — Status: IN PROGRESS (runs, 13.4 tok/s decode; logits check vs reference open)
 - T-023 — `sched/executor.py`: executor interface (prefill, decode, verify(k tokens) → k
   logits rows, rollback(pos), kv export/import) + `NpuExecutor` over IRON `Session` +
   `RefExecutor` (PyTorch) — Status: TODO
