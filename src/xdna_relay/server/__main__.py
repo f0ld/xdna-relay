@@ -23,6 +23,8 @@ def main(argv=None):
     ap.add_argument("--chat-template", help="a Jinja chat template file (default: from --hf)")
     ap.add_argument("--draft", help="draft GGUF for speculative decoding (one per slot)")
     ap.add_argument("--slots", type=int, default=2)
+    ap.add_argument("--no-batch", action="store_true",
+                    help="one llama.cpp context per slot, unbatched decode (default with --draft)")
     ap.add_argument("--ctx", type=int, default=8192, help="context per slot")
     ap.add_argument("--npu", action="store_true", help="NPU prefill worker (IRON) + KV handoff")
     ap.add_argument("--packed", action="store_true", help="NPU: packed bfp16 projections (Qwen3)")
@@ -46,10 +48,12 @@ def main(argv=None):
     policy = PlacementPolicy(costs_for(a.preset)) if a.preset else None
     engine = Engine(a.gguf, slots=a.slots, n_ctx=a.ctx, draft_gguf=a.draft, hf_dir=a.hf, npu=a.npu,
                     packed=a.packed, npu_max_seq_len=a.npu_max_seq_len, policy=policy,
-                    placement=a.placement, cache_bytes=a.cache_mib << 20)
+                    placement=a.placement, cache_bytes=a.cache_mib << 20,
+                    batched=False if (a.no_batch or a.draft) else True)
     name = a.name or engine.model
     httpd = serve(engine, tpl, name, a.host, a.port)
-    print(f"xdna-relay serving {name} on http://{a.host}:{a.port} ({a.slots} slots"
+    print(f"xdna-relay serving {name} on http://{a.host}:{a.port} ({a.slots} slots, "
+          f"{'batched' if engine.batched else 'unbatched'}"
           f"{', NPU prefill' if a.npu else ''}{', draft ' + a.draft if a.draft else ''})", flush=True)
 
     def stop(*_):

@@ -12,16 +12,35 @@ optional draft context for speculative decoding. A request runs in its caller's 
 5. the measured prefill time refines the policy (``observe``).
 
 The NPU worker is one process (IRON holds the GIL; T-017), used by one request at a time.
+
+Batched mode (default without a draft model; T-035): the slots are sequences of one
+``SharedLlamaContext`` (the model loaded once), and one stepper thread decodes every decoding
+slot in a single ``llama_decode`` per step (decode is weight-bandwidth bound: 2 sequences
+decode at ~15 tok/s each instead of 8). Request threads prefill their own sequence (the
+context lock is released between 512-token chunks, so steps interleave), then take their
+tokens from a queue the stepper fills. With a draft model, each slot keeps its own contexts
+and decodes speculatively (``generate``), unbatched.
 """
 from __future__ import annotations
 
+import queue
 import threading
 import time
 from dataclasses import dataclass, field
 
 from xdna_relay.sched.placement import PlacementPolicy
-from xdna_relay.sched.prefix_cache import PrefixCache, common_prefix
+from xdna_relay.sched.prefix_cache import PrefixCache, common_prefix, prefill
 from xdna_relay.sched.speculative import GenStats, generate
+
+
+@dataclass
+class _Decoding:
+    """A request in the stepper's batch."""
+    slot: "Slot"
+    last: int
+    remaining: int
+    out: queue.Queue
+    cancel: bool = False
 
 
 @dataclass
@@ -52,14 +71,23 @@ class Engine:
     def __init__(self, gguf: str, *, slots: int = 2, n_ctx: int = 8192, draft_gguf: str | None = None,
                  hf_dir: str | None = None, npu: bool = False, packed: bool = False,
                  npu_max_seq_len: int = 2048, policy: PlacementPolicy | None = None,
-                 placement: str = "auto", cache_bytes: int = 4 << 30):
+                 placement: str = "auto", cache_bytes: int = 4 << 30, batched: bool | None = None):
         from xdna_relay.backends.igpu.llama import LlamaCppExecutor
 
         if placement not in ("auto", "igpu", "npu"):
             raise ValueError(placement)
-        self.slots = [Slot(i, LlamaCppExecutor(gguf, n_ctx=n_ctx),
-                           LlamaCppExecutor(draft_gguf, n_ctx=n_ctx) if draft_gguf else None)
-                      for i in range(slots)]
+        self.batched = draft_gguf is None if batched is None else batched
+        if self.batched and draft_gguf:
+            raise ValueError("batched decode does not run a draft model (speculative is per slot)")
+        self.shared = None
+        if self.batched:
+            from xdna_relay.backends.igpu.llama_multi import SharedLlamaContext
+            self.shared = SharedLlamaContext(gguf, n_seq=slots, n_ctx=n_ctx * slots)
+            self.slots = [Slot(i, self.shared.seqs[i]) for i in range(slots)]
+        else:
+            self.slots = [Slot(i, LlamaCppExecutor(gguf, n_ctx=n_ctx),
+                               LlamaCppExecutor(draft_gguf, n_ctx=n_ctx) if draft_gguf else None)
+                          for i in range(slots)]
         self.model = self.slots[0].target.name
         self.cache = PrefixCache(max_bytes=cache_bytes)
         self.npu = None
@@ -85,6 +113,13 @@ class Engine:
         self._npu_lock = threading.Lock()
         self._npu_free_at = 0.0
         self.requests = 0
+        self.steps = 0  # batched decode steps
+        self.step_rows = 0  # sequences advanced, summed over steps
+        self._decoding: list[_Decoding] = []
+        self._step_cv = threading.Condition()
+        self._closing = False
+        if self.batched:
+            threading.Thread(target=self._stepper, name="decode-stepper", daemon=True).start()
 
     # ---- slots ---------------------------------------------------------------------------
 
@@ -147,29 +182,107 @@ class Engine:
                 self.policy.observe("npu", n_npu if choice.device == "npu" else k,
                                     t.get("eval", 0.0), active)
 
-            first = []
-
-            def cb(tok: int) -> bool:
-                if not first:
-                    first.append(time.perf_counter())
-                    with self._cv:
-                        slot.phase = "decode"
-                stop = bool(on_token(tok)) if on_token is not None else False
-                res.stopped = res.stopped or stop
-                return stop
-
-            st = generate(slot.target, prompt, max_tokens, draft=slot.draft, cache=self.cache, on_token=cb)
-            res.stats, res.tokens = st, list(st.tokens)
-            res.ttft_s = (first[0] if first else time.perf_counter()) - t0
-            res.total_s = time.perf_counter() - t0
-            if st.prefill is not None:
-                res.reused = st.prefill.reused_live + st.prefill.reused_cache
-                res.evaluated = st.prefill.evaluated
-                if choice.device == "igpu" and st.prefill.evaluated > 1:
-                    self.policy.observe("igpu", st.prefill.evaluated, st.prefill.t_eval, active)
+            if self.batched:
+                self._complete_batched(slot, prompt, max_tokens, on_token, res, t0, active, choice)
+            else:
+                self._complete_slot(slot, prompt, max_tokens, on_token, res, t0, active, choice)
             return res
         finally:
             self._release(slot)
+
+    def _complete_slot(self, slot, prompt, max_tokens, on_token, res, t0, active, choice):
+        """Unbatched: the slot's own contexts, ``generate`` (speculative with a draft)."""
+        first = []
+
+        def cb(tok: int) -> bool:
+            if not first:
+                first.append(time.perf_counter())
+                with self._cv:
+                    slot.phase = "decode"
+            stop = bool(on_token(tok)) if on_token is not None else False
+            res.stopped = res.stopped or stop
+            return stop
+
+        st = generate(slot.target, prompt, max_tokens, draft=slot.draft, cache=self.cache, on_token=cb)
+        res.stats, res.tokens = st, list(st.tokens)
+        res.ttft_s = (first[0] if first else time.perf_counter()) - t0
+        res.total_s = time.perf_counter() - t0
+        self._finish_prefill_stats(res, st.prefill, choice, active)
+
+    def _complete_batched(self, slot, prompt, max_tokens, on_token, res, t0, active, choice):
+        """Batched: prefill this sequence, then let the stepper decode it with the others."""
+        st = GenStats()
+        rows, st.prefill = prefill(slot.target, prompt, self.cache, store=False)
+        st.t_prefill = time.perf_counter() - t0
+        tok = int(rows.tokens[-1])
+        res.ttft_s = time.perf_counter() - t0
+        st.tokens.append(tok)
+        stop = bool(on_token(tok)) if on_token is not None else False
+        done = stop or slot.target.is_eog(tok) or max_tokens <= 1
+        if not done:
+            entry = _Decoding(slot, tok, max_tokens - 1, queue.Queue())
+            with self._cv:
+                slot.phase = "decode"
+            with self._step_cv:
+                self._decoding.append(entry)
+                self._step_cv.notify()
+            while True:
+                t = entry.out.get()
+                if t is None:
+                    break
+                if entry.cancel:  # the stepper may run one step past a stop: drop it
+                    continue
+                st.tokens.append(t)
+                if on_token is not None and on_token(t):
+                    entry.cancel = stop = True
+        res.stopped = stop
+        st.t_total = time.perf_counter() - t0
+        res.stats, res.tokens = st, list(st.tokens)
+        res.total_s = st.t_total
+        self.cache.put(slot.target.snapshot())
+        self._finish_prefill_stats(res, st.prefill, choice, active)
+
+    def _stepper(self) -> None:
+        """Decode every registered sequence by one token per step, in one batch."""
+        while True:
+            with self._step_cv:
+                while not self._decoding and not self._closing:
+                    self._step_cv.wait()
+                if self._closing:
+                    for e in self._decoding:
+                        e.out.put(None)
+                    return
+                batch = list(self._decoding)
+            try:
+                rows = self.shared.decode_step([e.slot.target for e in batch], [e.last for e in batch])
+            except Exception:
+                with self._step_cv:
+                    for e in batch:
+                        self._decoding.remove(e)
+                        e.out.put(None)
+                raise
+            self.steps += 1
+            self.step_rows += len(batch)
+            finished = []
+            for e, t in zip(batch, rows.tokens):
+                t = int(t)
+                e.last = t
+                e.remaining -= 1
+                e.out.put(t)
+                if e.cancel or e.remaining <= 0 or e.slot.target.is_eog(t):
+                    finished.append(e)
+            if finished:
+                with self._step_cv:
+                    for e in finished:
+                        self._decoding.remove(e)
+                        e.out.put(None)
+
+    def _finish_prefill_stats(self, res, info, choice, active) -> None:
+        if info is not None:
+            res.reused = info.reused_live + info.reused_cache
+            res.evaluated = info.evaluated
+            if choice.device == "igpu" and info.evaluated > 1:
+                self.policy.observe("igpu", info.evaluated, info.t_eval, active)
 
     def reset_state(self) -> None:
         """Forget every slot's sequence and the prefix cache (tests; a cold start)."""
@@ -190,9 +303,14 @@ class Engine:
         return self.slots[0].target.is_eog(token)
 
     def close(self) -> None:
+        with self._step_cv:
+            self._closing = True
+            self._step_cv.notify()
         if self.npu is not None:
             self.npu.close()
         for s in self.slots:
             for ex in (s.target, s.draft):
                 if ex is not None:
                     ex.close()
+        if self.shared is not None:
+            self.shared.close()

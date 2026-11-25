@@ -1,9 +1,11 @@
 """T-034: the serving engine and OpenAI-compatible HTTP server (src/xdna_relay/server/).
 
 Qwen3-0.6B Q8_0 on the iGPU (chat template from the HF directory). Greedy decoding is
-deterministic for the same prefill path, so runs compared for equality start cold
-(``Engine.reset_state``): a warm run reuses a prefix and evaluates the prompt in other
-chunks, which can flip near-ties (measured: "area 1." vs "**area 1**."; T-027's rule).
+deterministic for the same computation path, so runs compared for exact equality start cold
+(``Engine.reset_state``) and run alone. Different paths flip near-ties (T-027's rule): a warm
+run reuses a prefix (other prefill chunks); a batched step of 2 sequences runs other kernels
+than a step of 1 (T-035; measured: "area 1." vs "**area 1**." at token 11). Those compare
+with the near-tie rule: identical for at least the first 8 tokens.
 NPU-prefilled requests follow the handoff tolerance (T-031: identical greedy tokens).
 """
 import json
@@ -32,6 +34,11 @@ def tpl():
     return ChatTemplate.from_hf_dir(require(QWEN3_06B_HF), defaults={"enable_thinking": False})
 
 
+def _diverge(a, b):
+    """Index of the first differing token, None if one is a prefix of the other."""
+    return next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), None)
+
+
 def _prompt(engine, tpl, q, system=SYSTEM):
     return engine.tokenize(tpl.render([{"role": "system", "content": system}, {"role": "user", "content": q}]))
 
@@ -53,8 +60,11 @@ def test_engine_matches_generate(engine, tpl):
     finally:
         ref_ex.close()
     streamed = []
+    engine.reset_state()
     res = engine.complete(p, 24, on_token=lambda t: streamed.append(t) and False)
-    assert res.tokens == ref and streamed == ref and res.placement == "igpu"
+    assert streamed == res.tokens and res.placement == "igpu"
+    d = _diverge(res.tokens, ref)  # batched context vs a single-sequence one: near-tie rule
+    assert d is None or d >= 8, (d, res.tokens, ref)
 
 
 def test_concurrent_requests_reproduce_solo(engine, tpl):
@@ -75,7 +85,9 @@ def test_concurrent_requests_reproduce_solo(engine, tpl):
         t.start()
     for t in ts:
         t.join()
-    assert out == solo
+    for o, so in zip(out, solo):  # batched together vs alone: near-tie rule
+        d = _diverge(o, so)
+        assert d is None or d >= 8, (d, o, so)
 
 
 def test_prefix_cache_reused_across_slots(engine, tpl):
@@ -159,5 +171,27 @@ def test_npu_prefill_matches_igpu(npu, igpu, tpl):
         assert r_igpu.placement == "igpu"
         same = next((i for i, (x, y) in enumerate(zip(r_npu.tokens, r_igpu.tokens)) if x != y), None)
         assert same is None or same >= 8, (same, r_npu.tokens, r_igpu.tokens)
+    finally:
+        e.close()
+
+
+def test_npu_handoff_into_second_slot(npu, igpu, tpl):
+    """Two slots (per-sequence KV streams): the NPU's KV lands in whichever sequence the request
+    took, and that sequence then answers as an iGPU prefill does."""
+    from xdna_relay.server.engine import Engine
+    e = Engine(require(QWEN3_06B_Q8), slots=2, n_ctx=4096, hf_dir=require(QWEN3_06B_HF), npu=True,
+               placement="npu", npu_max_seq_len=1024)
+    try:
+        busy = e.slots[0]
+        busy.busy = True  # force the request onto slot 1
+        p = _prompt(e, tpl, "Which routers are in OSPF area 3?", system="Two slots. " + SYSTEM)
+        r = e.complete(p, 16)
+        assert r.slot == 1 and r.placement == "npu"
+        busy.busy = False
+        e.reset_state()
+        e.placement = "igpu"
+        r2 = e.complete(p, 16)
+        d = _diverge(r.tokens, r2.tokens)
+        assert d is None or d >= 8, (d, r.tokens, r2.tokens)
     finally:
         e.close()
