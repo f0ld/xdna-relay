@@ -114,10 +114,11 @@ class SharedLlamaContext:
             s._last_decode = -1  # its rows were part of a batch: logits() not available
         return rows
 
-    def step(self, parts: list[tuple["LlamaSeqExecutor", list[int], bool]]) -> list[tuple[int, float] | None]:
+    def step(self, parts: list[tuple["LlamaSeqExecutor", list[int], bool | str]]) -> list:
         """One mixed batch: per part, append ``tokens`` to the sequence (a decode token, or a
-        prefill chunk), with logits for the part's last token if its flag is set. Returns per
-        part (next greedy token, top1-top2 gap) or None. At most one part per sequence."""
+        prefill chunk), with logits for the part's last token if its flag is True, for every
+        token if it is ``"all"`` (a speculative verify). Returns per part (next greedy token,
+        top1-top2 gap), a list of those (``"all"``), or None. At most one part per sequence."""
         if len({p[0].seq for p in parts}) != len(parts):
             raise ValueError("a sequence twice in one step")
         n = sum(len(t) for _, t, _ in parts)
@@ -129,9 +130,9 @@ class SharedLlamaContext:
                 raise ValueError(f"seq {s.seq}: {s.n_past}+{len(t)} tokens exceed its n_ctx {s.n_ctx}")
             for j, tok in enumerate(t):
                 toks.append(int(tok)); pos.append(s.n_past + j); ids.append(s.seq)
-                last = j == len(t) - 1 and logits
-                want.append(1 if last else 0)
-                if last:
+                out = logits == "all" or (j == len(t) - 1 and logits)
+                want.append(1 if out else 0)
+                if out:
                     out_idx.append(len(toks) - 1)
         A = C.c_int * n
         idx = (C.c_int * max(1, len(out_idx)))(*out_idx)
@@ -148,7 +149,10 @@ class SharedLlamaContext:
             s.n_past += len(t)
             s.held.extend(int(x) for x in t)
             s._last_decode = -1
-            if logits:
+            if logits == "all":
+                res.append([(int(rows.tokens[k + j]), float(rows.gaps[k + j])) for j in range(len(t))])
+                k += len(t)
+            elif logits:
                 res.append((int(rows.tokens[k]), float(rows.gaps[k])))
                 k += 1
             else:

@@ -21,10 +21,10 @@ def main(argv=None):
     ap.add_argument("--gguf", required=True, help="target model for the iGPU (llama.cpp)")
     ap.add_argument("--hf", help="the same model's Hugging Face directory: chat template; NPU weights")
     ap.add_argument("--chat-template", help="a Jinja chat template file (default: from --hf)")
-    ap.add_argument("--draft", help="draft GGUF for speculative decoding (one per slot)")
+    ap.add_argument("--draft", help="draft GGUF for speculative decoding (batched: one shared draft context)")
     ap.add_argument("--slots", type=int, default=2)
     ap.add_argument("--no-batch", action="store_true",
-                    help="one llama.cpp context per slot, unbatched decode (default with --draft)")
+                    help="one llama.cpp context per slot, unbatched decode")
     ap.add_argument("--ctx", type=int, default=8192, help="context per slot")
     ap.add_argument("--prefill-chunk", type=int, default=256,
                     help="batched mode: prompt tokens per mixed step (smaller: decoders stall less)")
@@ -53,7 +53,7 @@ def main(argv=None):
         tpl = ChatTemplate.from_hf_dir(a.hf, defaults=defaults)
     else:
         ap.error("a chat template: --hf or --chat-template")
-    batched = not (a.no_batch or a.draft)
+    batched = not a.no_batch
     preset = a.preset
     if preset and batched and f"{preset}-batched" in presets():
         preset = f"{preset}-batched"  # measured on the batched engine
@@ -68,7 +68,7 @@ def main(argv=None):
 
         from xdna_relay.sched.calibration_store import DEFAULT_DIR, power_source, setup_key
         key = setup_key(gguf=Path(a.gguf).stem, npu=Path(a.hf).name if (a.npu and a.hf) else None,
-                        packed=a.packed and a.npu, engine=f"batched-{a.prefill_chunk}" if batched
+                        packed=a.packed and a.npu, engine=(f"batched-{a.prefill_chunk}" + ("-spec" if a.draft else "")) if batched
                         else "slots", prior=preset or "default", power=power_source())
         cal_path = a.calibration_file or str(DEFAULT_DIR / f"{key}.json")
     engine = Engine(a.gguf, slots=a.slots, n_ctx=a.ctx, draft_gguf=a.draft, hf_dir=a.hf, npu=a.npu,

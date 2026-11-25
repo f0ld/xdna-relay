@@ -131,3 +131,18 @@ as ignored, and Python then never raises KeyboardInterrupt: `kill -INT` does not
 script that waits for the server hangs forever (cost a 2 h stall in the T-040 check). The
 server now reinstalls `signal.default_int_handler`; in scripts prefer `kill -TERM`. Also:
 `pkill -f '<pattern>'` from a shell whose own command line contains the pattern kills that shell.
+
+## llama.cpp batch shapes on the 890M (T-041, 2026-11-25)
+- Qwen3-8B Q4_K_M batch cost has a cliff after 8 tokens per `llama_decode`: ~95 ms at 8,
+  ~165–190 ms from 9 (likely the Vulkan matrix-vector path's column limit; UNVERIFIED).
+  Never interpolate batch costs across it: measure them (engine start-up sweep).
+- With per-sequence KV (`kv_unified=False`), a batch whose sequences get different token
+  counts runs as one pass per distinct count ([2,1,1,1] ≈ 2× [1,1,1,1]). A unified buffer
+  runs it in one pass but makes every sequence attend over all sequences' cells.
+- `llama_decode` with no logits requested returns before the GPU finishes; the work shows up
+  in the next call's time. Ask for one logit when timing matters.
+
+## NpuWorker: a dead worker hung the parent (2026-11-25)
+The parent kept the child's end of the `Pipe` open, so `recv()` never saw EOF when the worker
+died (e.g. a script without an `if __name__ == "__main__":` guard: spawn re-runs it). The
+parent now closes it after `start()` and raises "NPU worker exited".

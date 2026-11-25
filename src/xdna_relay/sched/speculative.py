@@ -206,3 +206,197 @@ def generate(target: Executor, prompt: list[int], max_tokens: int, draft: Execut
             if ex is not None:
                 cache.put(ex.snapshot())
     return st
+
+
+# ---- batched speculation (T-041) ------------------------------------------------------
+
+def _interp(d: dict[int, float], x: int, slope: float) -> float | None:
+    """Cost at ``x`` tokens from costs measured at other token counts: linear between the
+    nearest measured counts; outside them, the nearest one scaled by a relative ``slope``."""
+    if x in d:
+        return d[x]
+    if not d:
+        return None
+    ks = sorted(d)
+    if ks[0] < x < ks[-1]:
+        hi = next(k for k in ks if k > x)
+        lo = max(k for k in ks if k < x)
+        return d[lo] + (d[hi] - d[lo]) * (x - lo) / (hi - lo)
+    k0 = ks[0] if x < ks[0] else ks[-1]
+    return d[k0] * (1 + slope * x) / (1 + slope * k0)
+
+
+def passes(counts: list[int]) -> list[int]:
+    """Tokens per pass over the weights for a batch giving ``counts[i]`` tokens to sequence i,
+    when llama.cpp splits it into equal-count ubatches (per-sequence KV buffers): one pass per
+    distinct count. [2, 1, 1, 1] -> [4, 1]; [3, 3, 1, 1] -> [4, 4]; [2, 2] -> [4]."""
+    out, prev = [], 0
+    for c in sorted({c for c in counts if c > 0}):
+        out.append(sum(1 for x in counts if x >= c) * (c - prev))
+        prev = c
+    return out
+
+
+@dataclass
+class Acceptance:
+    """Per-position acceptance of one sequence's drafts (EMAs): p[i] = P(draft i+1 accepted
+    | drafts 1..i accepted)."""
+
+    p: list[float]
+    ema: float = 0.15
+
+    def expected(self, k: int) -> float:
+        """Expected tokens a round with draft length k emits (accepted drafts + 1)."""
+        e, run = 1.0, 1.0
+        for i in range(k):
+            run *= self.p[i]
+            e += run
+        return e
+
+    def observe(self, k: int, accepted: int) -> None:
+        for i in range(min(accepted + 1, k)):
+            self.p[i] = (1 - self.ema) * self.p[i] + self.ema * (1.0 if i < accepted else 0.0)
+
+
+@dataclass
+class BatchK:
+    """Draft lengths for one round of the batched stepper (T-041).
+
+    A round: the draft model runs k steps for the drafting sequences in batched decodes (the
+    first also feeds each sequence's missing tokens and any draft catch-up chunks), then one
+    target batch verifies every decoding sequence's [last, d1..dk] (plus any prefill chunk
+    riding along). Costs are measured per batch size in tokens: verify(T) for the target
+    batch, draft(T) for a draft call; so a draft catch-up or a prefill chunk is costed by its
+    size, not folded into a per-token rate (T-030's catch-up pitfall cannot recur).
+    ``split_ragged``: the target splits a batch whose sequences get different token counts
+    into one pass per distinct count (per-sequence KV buffers; ``passes``): verify costs the
+    sum of its passes, so uneven shapes (some sequences drafting, a prefill chunk) pay extra.
+
+    The component model misses some costs (Python bookkeeping, rounds after requests end,
+    GPU work that overlaps); so ``choose`` also checks the outcome: per number of decoding
+    sequences, the tokens/s that drafting and plain rounds actually achieved (``rates``,
+    pure decode rounds only). When drafting measured slower, it does not draft; every
+    ``explore_every``-th round at that size takes the other arm to keep both rates fresh.
+
+    ``choose`` maximises expected tokens / round seconds over a common k and the subset of
+    sequences that draft (those with the highest expected gain first); the rest verify one
+    token. A batch of several sequences makes extra verify rows costlier relative to what
+    each returns, so k shrinks as the batch grows once verify stops being flat.
+    """
+
+    k_max: int = 8
+    k_init: int = 3
+    ema: float = 0.15
+    p_prior: float = 0.6
+    verify_slope: float = 0.02  # relative cost per extra token, until measured
+    draft_slope: float = 0.02
+    probe_every: int = 8
+    fixed: int | None = None
+    split_ragged: bool = False
+    verify: dict[int, float] = field(default_factory=dict)
+    draft: dict[int, float] = field(default_factory=dict)
+    p: list[float] = field(default_factory=list)  # pooled acceptance: the prior of new sequences
+    rate_ema: float = 0.1
+    explore_every: int = 16
+    rates: dict = field(default_factory=dict)  # (decoding seqs, drafted) -> [tokens/s EMA, rounds]
+    _zero_rounds: int = 0
+    _size_rounds: dict = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.p:
+            self.p = [self.p_prior] * self.k_max
+
+    def new_sequence(self) -> Acceptance:
+        return Acceptance(list(self.p), self.ema)
+
+    def _upd(self, d: dict[int, float], key: int, v: float) -> None:
+        d[key] = v if key not in d else (1 - self.ema) * d[key] + self.ema * v
+
+    def verify_cost(self, shape: list[int]) -> float:
+        """Target batch giving ``shape[i]`` tokens to sequence i."""
+        if self.split_ragged:
+            return sum(_interp(self.verify, t, self.verify_slope) for t in passes(shape))
+        return _interp(self.verify, sum(shape), self.verify_slope)
+
+    def round_cost(self, k: int, drafting: list[int], catch_up: list[int], n_rows: int,
+                   extra_draft: int = 0, extra_verify: int = 0) -> float:
+        """Seconds of a round: ``drafting`` = indices drafting k, ``catch_up[i]`` = tokens
+        sequence i's first draft call feeds, ``n_rows`` = decoding sequences in all."""
+        t = 0.0
+        if k > 0 and drafting:
+            t += _interp(self.draft, sum(catch_up[i] for i in drafting) + extra_draft, self.draft_slope)
+            if k > 1:
+                t += (k - 1) * _interp(self.draft, len(drafting), self.draft_slope)
+        elif extra_draft:
+            t += _interp(self.draft, extra_draft, self.draft_slope) or 0.0
+        m = len(drafting) if k else 0
+        return t + self.verify_cost([k + 1] * m + [1] * (n_rows - m) + ([extra_verify] if extra_verify else []))
+
+    def choose(self, accs: list[Acceptance], catch_up: list[int], n_plain: int = 0,
+               extra_draft: int = 0, extra_verify: int = 0) -> list[int]:
+        """Draft length per sequence in ``accs`` (each 0 or a common k). ``n_plain``: other
+        decoding sequences that cannot draft this round (verify one token each)."""
+        n = len(accs)
+        if n == 0:
+            return []
+        if self.fixed is not None:
+            return [self.fixed] * n
+        if not self.verify:
+            return [0] * n  # warm-up: a plain round measures verify
+        if not self.draft:
+            return [self.k_init] * n
+        rows = n + n_plain
+        best, best_rate = [0] * n, (n + n_plain) / self.round_cost(0, [], catch_up, rows, extra_draft, extra_verify)
+        for k in range(1, self.k_max + 1):
+            order = sorted(range(n), key=lambda i: -accs[i].expected(k))
+            for m in range(1, n + 1):
+                sub = order[:m]
+                toks = sum(accs[i].expected(k) for i in sub) + (rows - m)
+                rate = toks / self.round_cost(k, sub, catch_up, rows, extra_draft, extra_verify)
+                if rate > best_rate:
+                    best_rate = rate
+                    best = [k if i in sub else 0 for i in range(n)]
+        if not extra_verify:  # outcome check, pure decode rounds
+            c = self._size_rounds[rows] = self._size_rounds.get(rows, 0) + 1
+            on, off = self.rates.get((rows, True)), self.rates.get((rows, False))
+            if c % self.explore_every == 0:  # the arm not chosen below
+                draft_wins = on is None or off is None or on[0] >= off[0]
+                if any(best) and draft_wins:
+                    return [0] * n
+                return best if any(best) else [self.k_init] * n
+            if any(best) and on and off and on[0] < off[0]:
+                return [0] * n
+        if not any(best):
+            self._zero_rounds += 1
+            if self._zero_rounds % self.probe_every == 0:
+                return [self.k_init] * n  # keep acceptance fresh
+        return best
+
+    def observe_round(self, n_rows: int, drafted: bool, tokens: int, seconds: float) -> None:
+        """A pure decode round's outcome: ``tokens`` emitted by ``n_rows`` sequences in
+        ``seconds`` (the whole round, bookkeeping included)."""
+        if seconds <= 0 or n_rows <= 0:
+            return
+        key, v = (n_rows, drafted), tokens / seconds
+        r = self.rates.get(key)
+        self.rates[key] = [v, 1] if r is None else [(1 - self.rate_ema) * r[0] + self.rate_ema * v, r[1] + 1]
+
+    def observe(self, ks: list[int], accepted: list[int], accs: list[Acceptance], *, t_first: float,
+                first_tokens: int, t_rest: float, t_verify: float, verify_shape: list[int]) -> None:
+        """One round: per drafting sequence its k and accepted drafts; the first draft call
+        (``first_tokens`` fed), the further draft calls, the verify batch (tokens per
+        sequence). A split verify (several passes) is not attributed to its passes."""
+        p = passes(verify_shape) if self.split_ragged else [sum(verify_shape)]
+        if len(p) == 1:
+            self._upd(self.verify, p[0], t_verify)
+        k_hi = max(ks, default=0)
+        if first_tokens > 0:  # also a catch-up-only draft call (no drafting this round)
+            self._upd(self.draft, first_tokens, t_first)
+        if k_hi > 0:
+            if k_hi > 1:
+                self._upd(self.draft, sum(1 for k in ks if k > 1), t_rest / (k_hi - 1))
+        pooled = Acceptance(self.p, self.ema)
+        for k, j, acc in zip(ks, accepted, accs):
+            if k > 0:
+                acc.observe(k, j)
+                pooled.observe(k, j)

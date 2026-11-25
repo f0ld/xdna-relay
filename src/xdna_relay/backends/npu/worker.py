@@ -81,7 +81,8 @@ class NpuWorker:
         self.conn, child = ctx.Pipe()
         self.proc = ctx.Process(target=_serve, args=(child, hf_dir, max_seq_len, precision, profile_dir, packed), daemon=True)
         self.proc.start()
-        tag, self.name = self.conn.recv()
+        child.close()  # else a dead worker never shows as EOF here and recv() blocks forever
+        tag, self.name = self._recv()
         assert tag == "ready"
         self.last_timing: dict[str, float] = {}
         self.held: list[int] = []  # what the worker's executor holds (mirrors _serve's reuse)
@@ -92,7 +93,7 @@ class NpuWorker:
         ``llama_state.meta`` of the destination's template)."""
         self.conn.send(("prefill", (list(tokens), tpl)))
         self.held = list(tokens)
-        tag, (name, size, self.last_timing) = self.conn.recv()
+        tag, (name, size, self.last_timing) = self._recv()
         shm = shared_memory.SharedMemory(name=name)
         try:
             use(np.ndarray(size, np.uint8, buffer=shm.buf))
@@ -103,6 +104,14 @@ class NpuWorker:
                 pass
             shm.unlink()
             self.conn.send(("ack", None))
+
+    def _recv(self):
+        try:
+            return self.conn.recv()
+        except EOFError:
+            self.proc.join(timeout=5)
+            raise RuntimeError(f"NPU worker exited (code {self.proc.exitcode}); a script that starts it "
+                               "needs an `if __name__ == '__main__':` guard (spawn re-runs it)") from None
 
     def close(self) -> None:
         try:
