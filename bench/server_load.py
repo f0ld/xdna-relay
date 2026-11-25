@@ -34,17 +34,24 @@ def stream(url, messages, max_tokens, stamps):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default="http://127.0.0.1:8090")
-    ap.add_argument("--b-words", type=int, default=900)
+    ap.add_argument("--b-words", default="900", help="comma list: one row set per B prompt size")
     ap.add_argument("--gen-a", type=int, default=200)
     ap.add_argument("--gen-b", type=int, default=32)
     ap.add_argument("--runs", type=int, default=2)
     a = ap.parse_args()
-    print("run,a_tps_during_b_wait,a_tps_overall,b_ttft_s,b_placement,b_reused,a_total_s,b_total_s", flush=True)
-    for run in range(a.runs):
+    print("b_words,run,a_tps_during_b_wait,a_tps_overall,b_ttft_s,b_placement,b_reused,a_total_s,b_total_s,b_prompt_tokens",
+          flush=True)
+    for words in map(int, a.b_words.split(",")):
+        for run in range(a.runs):
+            one(a, words, run)
+
+
+def one(a, words, run):
+    if True:
         a_st, b_st, res = [], [], {}
         t0 = time.perf_counter()
         ta = threading.Thread(target=lambda: res.__setitem__("a", stream(
-            a.url, [{"role": "user", "content": f"[{run}] " + A_TEXT}], a.gen_a, a_st)))
+            a.url, [{"role": "user", "content": f"[{words}.{run}] " + A_TEXT}], a.gen_a, a_st)))
         ta.start()
         deadline = time.perf_counter() + 300
         while not a_st:  # A's first token (give up if the server never answers)
@@ -53,13 +60,13 @@ def main():
             time.sleep(0.01)
         time.sleep(1.0)
         tb0 = time.perf_counter()
-        last_b = stream(a.url, [{"role": "user", "content": f"[{run}] " + b_prompt(a.b_words)}], a.gen_b, b_st)
+        last_b = stream(a.url, [{"role": "user", "content": f"[{words}.{run}] " + b_prompt(words)}], a.gen_b, b_st)
         ta.join()
         tb1 = b_st[0] if b_st else time.perf_counter()
         during = [s for s in a_st if tb0 <= s <= tb1]
         xr = last_b.get("x_relay", {})
-        print(f"{run},{len(during) / (tb1 - tb0):.1f},{len(a_st) / (a_st[-1] - a_st[0]):.1f},{tb1 - tb0:.2f},"
-              f"{xr.get('placement')},{xr.get('reused_tokens')},{a_st[-1] - t0:.2f},{b_st[-1] - tb0:.2f}", flush=True)
+        print(f"{words},{run},{len(during) / (tb1 - tb0):.1f},{len(a_st) / (a_st[-1] - a_st[0]):.1f},{tb1 - tb0:.2f},"
+              f"{xr.get('placement')},{xr.get('reused_tokens')},{a_st[-1] - t0:.2f},{b_st[-1] - tb0:.2f},{last_b['usage']['prompt_tokens']}", flush=True)
 
 
 if __name__ == "__main__":

@@ -63,3 +63,27 @@ Interleaving only trades: smaller chunks share the iGPU more fairly, but each st
 cost and the smaller prefill matmuls add work, so everything ends later. 256 keeps B's TTFT
 and both totals within a few percent of 512. The way to keep A decoding is the NPU (A 10
 tok/s during B's prefill, above).
+
+## Placement recalibrated for the batched engine (T-037)
+`bench/server_load.py --b-words 30,200,900`, server batched (chunk 256), `--placement igpu`
+vs `npu`, Qwen3-8B packed, on battery, A alone ~15.5 tok/s; no NPU TDR.
+| B tokens | iGPU: B TTFT / A during | NPU: B TTFT / A during |
+|---|---|---|
+| 85 | 0.37–0.43 s / 4.7–5.4 | 0.94–0.95 s / 9.5–10.7 |
+| 401 | 1.41 s / 2.1 | 1.55–1.57 s / 9.6–9.7 |
+| 1721 | 5.43–5.44 s / 1.5 | 4.55–4.69 s / 10.1–10.2 |
+Fit (preset `qwen3-8b-packed-batched`; the server picks a preset's `-batched` variant when
+batched): iGPU 1.240x alone + 0.157 s, keep 0.067; NPU 1.488x + 0.082 s, keep 0.643 (all
+TTFT fits within 4%). Compared with the unbatched engine, an iGPU prefill waits less
+(0.16 vs 0.53 s) but stalls A harder (keeps 7% vs 20%).
+
+Decisions: 85 tokens iGPU; ~180+ NPU; just past a 256-row block **split** (NPU whole blocks,
+the iGPU the tail inside a mixed step). Split validated at 282 tokens (`--placement split`):
+| placement | B TTFT | A during | A done | TTFT + A lost (measured / estimated) |
+|---|---|---|---|---|
+| igpu | 1.09–1.11 s | 1.8–2.7 | 14.1–14.4 s | 2.04 / 1.83 |
+| npu | 1.48–1.53 s | 9.5–9.8 | 14.4 s | 2.07 / 2.14 |
+| **split** (256 NPU + 26 iGPU) | 1.21–1.37 s | 8.7–10.2 | **13.7–14.0 s** | **1.81 / 1.52** |
+| auto (chose split) | 1.21–1.32 s | 9.1 | 14.0 s | |
+First measurement where split wins: in the batched engine the iGPU tail is cheap (it rides in
+a mixed step). The policy ranks the options as measured; it is optimistic about split by ~0.3.

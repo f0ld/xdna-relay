@@ -122,3 +122,29 @@ def test_short_version_used_up_to_its_rows():
     c = costs_for("qwen3-8b-packed")
     assert c.npu_alone_s(640) == pytest.approx(0.100 + 0.459 * 3)
     assert c.npu_alone_s(641) == pytest.approx(0.510 + 0.362 * 3)
+
+
+@pytest.mark.parametrize("n,igpu,npu", [(85, 0.40, 0.945), (401, 1.41, 1.56), (1721, 5.435, 4.62)])
+def test_batched_preset_reproduces_measurements(n, igpu, npu):
+    """Batched server engine (T-035/T-036), measured 2026-11-25 (2026-11-25-batched-decode.md)."""
+    p = PlacementPolicy(costs_for("qwen3-8b-packed-batched"))
+    assert p.estimate("igpu", n, active=1).ttft_s == pytest.approx(igpu, rel=0.15)
+    assert p.estimate("npu", n, active=1).ttft_s == pytest.approx(npu, rel=0.15)
+
+
+def test_batched_preset_decisions():
+    """Measured: 85 tokens better on the iGPU (TTFT 0.4 vs 0.95 s, A loses 0.27 vs 0.33
+    decode-s); 401 and 1721 on the NPU (A keeps ~10 vs 2.1 / 1.5 tok/s)."""
+    p = PlacementPolicy(costs_for("qwen3-8b-packed-batched"))
+    assert p.choose(85, active=1).device == "igpu"
+    assert p.choose(401, active=1).device in ("npu", "split")
+    assert p.choose(1721, active=1).device in ("npu", "split")
+
+
+def test_batched_split_just_past_a_block():
+    """282 tokens (one 256-row NPU block + 26): measured split TTFT 1.21-1.37 s with A at
+    8.7-10.2 tok/s, vs NPU 1.48-1.53 s / 9.5-9.8 and iGPU 1.09-1.11 s / 1.8-2.7; split has the
+    lowest TTFT + lost decode time (1.81 vs 2.04 / 2.07) and A finishes first."""
+    p = PlacementPolicy(costs_for("qwen3-8b-packed-batched"))
+    c = p.choose(282, active=1)
+    assert c.device == "split" and c.npu_tokens == 256

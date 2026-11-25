@@ -32,7 +32,7 @@ def main(argv=None):
     ap.add_argument("--packed", action="store_true", help="NPU: packed bfp16 projections (Qwen3)")
     ap.add_argument("--npu-max-seq-len", type=int, default=2048)
     ap.add_argument("--preset", choices=presets(), help="measured placement costs for this model pair")
-    ap.add_argument("--placement", default="auto", choices=["auto", "igpu", "npu"])
+    ap.add_argument("--placement", default="auto", choices=["auto", "igpu", "npu", "split"])
     ap.add_argument("--cache-mib", type=int, default=4096, help="prefix cache budget (host RAM)")
     ap.add_argument("--no-think", action="store_true", help="Qwen3: enable_thinking=False by default")
     ap.add_argument("--name", help="model id reported by /v1/models")
@@ -47,16 +47,21 @@ def main(argv=None):
         tpl = ChatTemplate.from_hf_dir(a.hf, defaults=defaults)
     else:
         ap.error("a chat template: --hf or --chat-template")
-    policy = PlacementPolicy(costs_for(a.preset)) if a.preset else None
+    batched = not (a.no_batch or a.draft)
+    preset = a.preset
+    if preset and batched and f"{preset}-batched" in presets():
+        preset = f"{preset}-batched"  # measured on the batched engine
+    policy = PlacementPolicy(costs_for(preset)) if preset else None
     engine = Engine(a.gguf, slots=a.slots, n_ctx=a.ctx, draft_gguf=a.draft, hf_dir=a.hf, npu=a.npu,
                     packed=a.packed, npu_max_seq_len=a.npu_max_seq_len, policy=policy,
                     placement=a.placement, cache_bytes=a.cache_mib << 20,
-                    batched=False if (a.no_batch or a.draft) else True, prefill_chunk=a.prefill_chunk)
+                    batched=batched, prefill_chunk=a.prefill_chunk)
     name = a.name or engine.model
     httpd = serve(engine, tpl, name, a.host, a.port)
     print(f"xdna-relay serving {name} on http://{a.host}:{a.port} ({a.slots} slots, "
           f"{'batched' if engine.batched else 'unbatched'}"
-          f"{', NPU prefill' if a.npu else ''}{', draft ' + a.draft if a.draft else ''})", flush=True)
+          f"{', NPU prefill' if a.npu else ''}{', draft ' + a.draft if a.draft else ''}"
+          f"{', placement preset ' + preset if preset else ''})", flush=True)
 
     def stop(*_):
         httpd.shutdown()

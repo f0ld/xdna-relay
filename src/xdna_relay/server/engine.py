@@ -77,7 +77,7 @@ class Engine:
                  prefill_chunk: int = 256):
         from xdna_relay.backends.igpu.llama import LlamaCppExecutor
 
-        if placement not in ("auto", "igpu", "npu"):
+        if placement not in ("auto", "igpu", "npu", "split"):
             raise ValueError(placement)
         self.batched = draft_gguf is None if batched is None else batched
         if self.batched and draft_gguf:
@@ -159,6 +159,9 @@ class Engine:
             choice = self.policy.estimate("igpu", n_igpu, active)
         elif self.placement == "npu" and n_npu > 0 and len(prompt) <= self.policy.npu_max_tokens:
             choice = self.policy.estimate("npu", n_npu, active, busy)
+        elif (self.placement == "split" and self.npu is not None and len(prompt) <= self.policy.npu_max_tokens
+              and (k := limit // self.policy.costs.npu_block * self.policy.costs.npu_block) > 0):
+            choice = self.policy.estimate("split", limit, active, busy, npu_tokens=k)
         return choice, active, n_igpu, n_npu
 
     def complete(self, prompt: list[int], max_tokens: int = 256, on_token=None) -> Result:

@@ -88,6 +88,17 @@ _PRESETS: dict[str, DeviceCosts] = {
         igpu_wait_s=0.527, npu_wait_s=0.110,
         npu_short_rows=640, npu_short_fixed_s=0.100, npu_short_block_s=0.459,
         source="bench/results/2026-11-25-packed-gemm.md"),
+    # The same pair on the batched server engine (T-035/T-036: one shared context, mixed
+    # prefill+decode steps, 256-token chunks). B TTFT under A, 85/401/1721 tokens: iGPU
+    # 0.37-0.43 / 1.41 / 5.43 s, NPU 0.94-0.95 / 1.55-1.57 / 4.55-4.69 s (fits within 4%);
+    # A (alone ~15.5 tok/s) during: iGPU 4.7-5.4 / 2.1 / 1.5, NPU 9.5-10.7 / 9.6 / 10.1.
+    # On battery, platform balanced (2026-11-25-batched-decode.md).
+    "qwen3-8b-packed-batched": DeviceCosts(
+        igpu_prefill_tps=404.0, npu_fixed_s=0.510, npu_block_s=0.362, handoff_row_s=250e-3 / 1702,
+        igpu_slow=1.240, npu_slow=1.488, keep_igpu=0.067, keep_npu=0.643,
+        igpu_wait_s=0.157, npu_wait_s=0.082,
+        npu_short_rows=640, npu_short_fixed_s=0.100, npu_short_block_s=0.459,
+        source="bench/results/2026-11-25-batched-decode.md"),
 }
 
 

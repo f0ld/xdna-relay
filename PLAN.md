@@ -6,7 +6,7 @@ Status values: `TODO`, `IN PROGRESS`, `REVIEW`, `DONE`, `BLOCKED` (see PROTOCOL.
 
 - Since 2026-11-24 the Architect implements directly (Implementer paused, ADR 0006). Tasks
   keep a done-command and tests; review files are written only for larger milestones.
-- Active task: **T-037** recalibrate placement presets for the batched engine
+- Active task: next — open items: split estimate optimistic (~0.3); presets per model pair are hand-fitted (an online calibrator from `observe` would remove that); 3B/Llama batched presets
 - Power: the machine runs platform profile `low-power` (fan noise); NPU may run FLM
   `--pmode performance`. Every bench row records the profile.
 - Operator TODOs: see `docs/knowledge/environment.md` → "Operator TODOs" (driver timeout).
@@ -48,6 +48,7 @@ Own pieces, each an A/B against the IRON graph it replaces (Operator, 2026-11-24
 ## MS — Speculative decoding across devices
 
 - T-025 — Draft on NPU, verify on iGPU — Status: DONE (negative, ADR 0007: ~0–10% at best; FLM unusable as draft)
+- T-037 — Placement presets recalibrated for the batched engine (`qwen3-8b-packed-batched`, auto-selected) — Status: DONE (`scripts/test.sh T-032` 29/29; fits within 4%; split validated at 282 tokens: lowest TTFT + A loss, A done first)
 - T-036 — Mixed batches: iGPU prefill chunks ride along with decode tokens (stepper does all shared-context work) — Status: DONE (`scripts/test.sh T-034/T-035` pass; chunk 64–512 only trades A's speed during prefill vs B's TTFT, totals get worse below 256; default 256)
 - T-035 — Batched decode across slots (one llama.cpp context, n sequences, stepper thread) — Status: DONE (`scripts/test.sh T-035` 5/5, T-034 10/10; 2 clients 30 vs 16 tok/s total, 4: 56 vs 16; with NPU prefill A keeps 10 vs 0.9 tok/s during B's prefill; bench/results/2026-11-25-batched-decode.md)
 - T-034 — M7: OpenAI-compatible server (`python -m xdna_relay.server`): slots on iGPU, NPU prefill worker, prefix cache, placement per request, SSE streaming — Status: DONE (`scripts/test.sh T-034` 9/9; Qwen3-8B two requests via HTTP: A 10.2 vs 1.8–2.7 tok/s during B's prefill, B TTFT 4.7–4.9 vs 5.6–6.0 s)
