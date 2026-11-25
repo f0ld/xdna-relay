@@ -81,7 +81,32 @@ def test_engine_feeds_the_calibrator(igpu):
             e.complete(e.tokenize(f"<|im_start|>user\\nTell me about rivers, part {i}.<|im_end|>\\n"
                                   "<|im_start|>assistant\\n<think>\\n\\n</think>\\n\\n"), 24)
         s = e.policy.online.summary()
-        assert s["igpu"][0] >= 3  # three iGPU prefills observed (nothing else decoding)
+        assert s["igpu"][0] + s["igpu:small"][0] >= 3  # three iGPU prefills observed
         assert s["plain_step_s"][0] > 0  # decode steps timed
     finally:
         e.close()
+
+
+def test_small_tails_have_their_own_fit():
+    """Tails after a handoff (1 token, a split's rest) cost about a decode step; learning that
+    must not drag the bulk prefill line, and vice versa."""
+    p = PlacementPolicy.calibrating(costs_for(PRESET))
+    for _ in range(30):
+        p.observe_part("igpu", 1, 0.08, active=1)
+        p.observe_part("igpu", 26, 0.12, active=1)
+        p.observe_part("igpu", 1700, 5.4, active=1)
+        p.observe_part("igpu", 400, 1.4, active=1)
+    o = p.online
+    assert o.igpu_s(1, 1) == pytest.approx(0.08, abs=0.03)
+    assert o.igpu_s(26, 1) == pytest.approx(0.12, abs=0.03)
+    assert o.igpu_s(1700, 1) == pytest.approx(5.4, rel=0.05)
+    assert o.igpu_s(400, 1) == pytest.approx(1.4, rel=0.08)
+
+
+def test_npu_versions_split_even_with_a_single_curve_prior():
+    p = PlacementPolicy.calibrating(costs_for("llama3.2-3b"))  # prior without a short version
+    for _ in range(30):
+        p.observe_part("npu", 300, 0.9, active=1)  # short version: 2 blocks
+        p.observe_part("npu", 1700, 3.2, active=1)  # long: 7 blocks
+    assert p.online.npu_s(300, 1) == pytest.approx(0.9, rel=0.08)
+    assert p.online.npu_s(1700, 1) == pytest.approx(3.2, rel=0.08)
