@@ -38,7 +38,7 @@ def decode(ex, first_token, n, stamps):
             break
 
 
-def run(mode, gpu_a, gpu_b, npu, a_prompt, b_prompt_toks, gen_a, gen_b):
+def run(mode, gpu_a, gpu_b, npu, a_prompt, b_prompt_toks, gen_a, gen_b, policy=None):
     gpu_a.reset(); gpu_b.reset()
     if npu is not None and hasattr(npu, "reset"):
         npu.reset()
@@ -50,13 +50,25 @@ def run(mode, gpu_a, gpu_b, npu, a_prompt, b_prompt_toks, gen_a, gen_b):
     ta.start()
     time.sleep(1.0)
     tb0 = time.perf_counter()
+    if mode == "auto":
+        c = policy.choose(len(b_prompt_toks) - 1, active=1)
+        res["choice"] = c
+        mode = {"npu": "hybrid-proc", "split": "split", "igpu": "igpu"}[c.device]
+        split_k = c.npu_tokens
+    elif mode == "split":
+        split_k = (len(b_prompt_toks) - 1) // 256 * 256
+        if split_k == 0:  # shorter than one NPU block: nothing to split
+            mode = "igpu"
+    res["ran"] = mode
     if mode == "igpu":
         b_first = int(gpu_b.eval(b_prompt_toks).tokens[-1])
-    elif mode == "hybrid-proc":
-        res["handoff"] = h = worker_to_llama(npu, gpu_b, b_prompt_toks[:-1])
+    elif mode in ("hybrid-proc", "split"):
+        k = len(b_prompt_toks) - 1 if mode == "hybrid-proc" else split_k
+        res["handoff"] = h = worker_to_llama(npu, gpu_b, b_prompt_toks[:k])
         print("  npu " + " ".join(f"{k} {1e3 * v:.0f}" for k, v in npu.last_timing.items())
-              + f" | ipc {1e3 * h.t_convert:.0f} import {1e3 * h.t_import:.0f} ms", flush=True)
-        b_first = int(gpu_b.eval([b_prompt_toks[-1]]).tokens[-1])
+              + f" | ipc {1e3 * h.t_convert:.0f} import {1e3 * h.t_import:.0f} ms"
+              + (f" | iGPU tail {len(b_prompt_toks) - k} tokens" if mode == "split" else ""), flush=True)
+        b_first = int(gpu_b.eval(b_prompt_toks[k:]).tokens[-1])
     else:
         npu.eval(b_prompt_toks[:-1])
         res["handoff"] = npu_to_llama(npu, gpu_b)
@@ -85,13 +97,18 @@ def main():
     ap.add_argument("--gen-a", type=int, default=200)
     ap.add_argument("--gen-b", type=int, default=32)
     ap.add_argument("--modes", default="igpu,hybrid")
+    ap.add_argument("--preset", help="placement preset for mode auto (sched.placement.presets())")
     ap.add_argument("--precision", help="IRON matmul precision override (high, medium)")
     ap.add_argument("--profile-dir", help="IRON tuned profile directory (bench/iron_tune.py)")
     a = ap.parse_args()
     gpu_a = LlamaCppExecutor(a.gguf, n_ctx=4096, name="A")
     gpu_b = LlamaCppExecutor(a.gguf, n_ctx=4096)
     modes = a.modes.split(",")
-    if "hybrid-proc" in modes:
+    policy = None
+    if "auto" in modes:
+        from xdna_relay.sched.placement import PlacementPolicy, costs_for
+        policy = PlacementPolicy(costs_for(a.preset))
+    if {"hybrid-proc", "split", "auto"} & set(modes):
         npu = NpuWorker(a.hf, max_seq_len=2048, precision=a.precision, profile_dir=a.profile_dir)
     elif "hybrid" in modes:
         npu = IronLmExecutor(a.hf, max_seq_len=2048, precision=a.precision, profile_dir=a.profile_dir)
@@ -111,9 +128,14 @@ def main():
     for i, mode in enumerate(modes):
         # a fresh B prompt per run (salted), so no executor reuses a held prefix
         bpi = gpu_b.tokenize(f"[{i}] " + b_prompt(a.b_words))
-        r = run(mode, gpu_a, gpu_b, npu, a_prompt, bpi, a.gen_a, a.gen_b)
+        r = run(mode, gpu_a, gpu_b, npu, a_prompt, bpi, a.gen_a, a.gen_b, policy)
         h = r.get("handoff")
-        hms = 1e3 * (h.t_convert + h.t_import + (0 if mode == "hybrid-proc" else h.t_export)) if h else 0
+        hms = 1e3 * (h.t_convert + h.t_import + (0 if r["ran"] in ("hybrid-proc", "split") else h.t_export)) if h else 0
+        if "choice" in r:
+            c = r["choice"]
+            print(f"  auto chose {c.device}: est. B TTFT {c.ttft_s:.2f} s, A lost {c.lost_decode_s:.2f} s "
+                  f"(other: {c.other.device} {c.other.ttft_s:.2f} s / {c.other.lost_decode_s:.2f} s)" if c.other
+                  else f"  auto chose {c.device}", flush=True)
         print(f"{mode},{r['a_tps_during_b_prefill']:.1f},{r['a_tps_overall']:.1f},{r['b_ttft']:.2f},"
               f"{r['b_tps']:.1f},{r['makespan']:.2f},{hms:.0f}", flush=True)
     if isinstance(npu, NpuWorker):
