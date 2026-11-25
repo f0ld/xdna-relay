@@ -33,9 +33,11 @@ def main():
     ap.add_argument("--gen-a", type=int, default=120)
     ap.add_argument("--gen-b", type=int, default=8)
     ap.add_argument("--every", type=int, default=4)
+    ap.add_argument("--a-alone", type=float, default=15.5, help="A's tok/s alone (for client keep)")
     a = ap.parse_args()
     sizes = [int(w) for w in a.b_words.split(",")]
-    print("round,b_tokens,placement,npu_tokens,est_ttft_ms,ttft_ms,err_pct,a_tps_during", flush=True)
+    print("round,b_tokens,placement,npu_tokens,est_ttft_ms,ttft_ms,err_pct,a_tps_during,keep_client,keep_server",
+          flush=True)
     for i in range(a.rounds):
         words = sizes[i % len(sizes)]
         a_st, b_st = [], []
@@ -56,7 +58,8 @@ def main():
         x = last["x_relay"]
         est, got = x["estimated_ttft_ms"], x["ttft_ms"]
         print(f"{i},{last['usage']['prompt_tokens']},{x['placement']},{x['npu_tokens']},{est:.0f},{got:.0f},"
-              f"{100 * (est - got) / got:+.0f},{len(during) / max(tb1 - tb0, 1e-9):.1f}", flush=True)
+              f"{100 * (est - got) / got:+.0f},{len(during) / max(tb1 - tb0, 1e-9):.1f},"
+              f"{len(during) / max(tb1 - tb0, 1e-9) / a.a_alone:.2f},{x.get('others_keep')}", flush=True)
         if (i + 1) % a.every == 0:
             print("# calibration " + json.dumps(calib(a.url)["fits"]), flush=True)
 

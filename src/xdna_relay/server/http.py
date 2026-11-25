@@ -36,7 +36,8 @@ def _relay_info(res, notes):
     return {"placement": res.placement, "npu_tokens": res.npu_tokens, "slot": res.slot,
             "reused_tokens": res.reused, "evaluated_tokens": res.evaluated,
             "ttft_ms": round(1e3 * res.ttft_s, 1), "estimated_ttft_ms": round(1e3 * res.estimate_ttft_s, 1),
-            "total_ms": round(1e3 * res.total_s, 1), "notes": notes}
+            "total_ms": round(1e3 * res.total_s, 1), "notes": notes,
+            "others_keep": None if res.keep_observed is None else round(res.keep_observed, 3)}
 
 
 def make_handler(engine, chat_template, model_name: str):

@@ -68,6 +68,7 @@ class Result:
     reused: int = 0
     evaluated: int = 0
     stopped: bool = False
+    keep_observed: float | None = None  # others' decode speed kept during this prefill
 
 
 class Engine:
@@ -120,6 +121,7 @@ class Engine:
         self.requests = 0
         self.prefill_chunk = prefill_chunk  # prompt tokens per mixed step (batched mode)
         self.steps = 0  # batched decode steps
+        self._step_ends: list[float] = []  # end times of recent steps that advanced decoders
         self.step_rows = 0  # sequences advanced, summed over steps
         self._decoding: list[_Decoding] = []
         self._step_cv = threading.Condition()
@@ -259,6 +261,11 @@ class Engine:
         res.total_s = st.t_total
         self.cache.put(slot.target.snapshot())
         self._finish_prefill_stats(res, info, choice, active)
+        if active and self.policy.online is not None and st.tokens:
+            # how much the others kept while this request was prefilled (arrival -> first token)
+            t_first = t0 + res.ttft_s
+            steps = sum(1 for t in list(self._step_ends) if t0 <= t <= t_first)
+            res.keep_observed = self.policy.online.observe_window(choice.device, res.ttft_s, steps)
 
     def _stepper(self) -> None:
         """Each step, one llama_decode: every decoding sequence's next token, plus the next
@@ -296,6 +303,10 @@ class Engine:
                     raise
                 self.steps += 1
                 self.step_rows += len(dec)
+                if dec:
+                    self._step_ends.append(time.perf_counter())
+                    if len(self._step_ends) > 4096:
+                        del self._step_ends[:2048]
                 if dec and self.policy.online is not None:
                     self.policy.online.observe_step(time.perf_counter() - t_step,
                                                     prefill_chunk=bool(pre), npu_busy=npu_busy)

@@ -59,15 +59,21 @@ def test_learns_a_slower_npu_and_flips_the_decision():
     assert p.choose(1721, active=1).device == "igpu"
 
 
-def test_keep_from_step_times():
+def test_keep_from_request_windows():
+    """Keep per placement from whole prefill windows; steps with prefill chunks (the tails of
+    NPU/split requests) do not move it, only set no baseline."""
     o = OnlineCosts(costs_for(PRESET))
+    assert o.observe_window("igpu", 1.0, 5) is None  # no baseline yet
     for _ in range(20):
         o.observe_step(0.065, prefill_chunk=False, npu_busy=False)
-    for _ in range(200):
-        o.observe_step(0.30, prefill_chunk=True, npu_busy=False)
-        o.observe_step(0.10, prefill_chunk=False, npu_busy=True)
-    assert o.keep_igpu.value == pytest.approx(0.065 / 0.30, abs=0.02)
-    assert o.keep_npu.value == pytest.approx(0.065 / 0.10, abs=0.02)
+        o.observe_step(0.070, prefill_chunk=True, npu_busy=False)  # a tail step: ignored
+    for _ in range(60):
+        o.observe_window("igpu", 1.39, 3)  # client-measured case: ~2.2 tok/s of 15.5
+        o.observe_window("npu", 1.68, 17)
+    assert o.plain_step_s == pytest.approx(0.065, abs=1e-3)
+    assert o.keep_igpu.value == pytest.approx(3 * 0.065 / 1.39, abs=0.02)
+    assert o.keep_npu.value == pytest.approx(17 * 0.065 / 1.68, abs=0.02)
+    assert o.observe_window("split", 1.3, 15) is None
 
 
 def test_engine_feeds_the_calibrator(igpu):

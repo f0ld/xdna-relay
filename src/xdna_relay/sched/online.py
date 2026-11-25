@@ -17,9 +17,13 @@ server measures every prefill it runs anyway, so the model can keep fitting itse
           the NPU part is worker eval + KV pack + handoff, up to the slot holding n tokens.
   Every option is composed from parts: igpu = iGPU(n); npu = NPU(n - 1) + iGPU(1);
   split = NPU(k) + iGPU(n - k). Each part learns from its own observations.
-- Decode slowdown ("keep"): the share of its speed a decoding request keeps while a prefill
-  runs, from the stepper's step times: plain decode steps vs steps carrying a prefill chunk
-  (iGPU) vs steps while the NPU worker is busy. EMA from the preset's value.
+- Decode slowdown ("keep"): the share of its speed a decoding request keeps while another
+  request is prefilled, per placement, measured over that request's whole window (arrival to
+  first token): decode steps completed in the window x plain step time / window length.
+  (Per-step ratios were biased: steps carrying the 1-token tails of NPU / split requests
+  count as "prefill" steps yet barely slow anyone, and time outside the steps — request
+  handling — was invisible: keep_iGPU 0.29 from steps vs 0.14 seen by the client;
+  2026-11-25-calibration.md.) EMA from the preset's value.
 """
 from __future__ import annotations
 
@@ -95,8 +99,8 @@ class OnlineCosts:
         for version, (fx, blk) in self._versions().items():
             self.npu[(version, False)] = mk(fx, blk + hb)
             self.npu[(version, True)] = mk(fx * p.npu_slow + p.npu_wait_s - last, blk * p.npu_slow)
-        self.keep_igpu = Ema(p.keep_igpu)
-        self.keep_npu = Ema(p.keep_npu)
+        self.keep_igpu = Ema(p.keep_igpu, alpha=0.2)  # one observation per request now
+        self.keep_npu = Ema(p.keep_npu, alpha=0.2)
         self._plain_step = Ema(0.0, alpha=0.1)
 
     def _versions(self) -> dict:
@@ -138,19 +142,32 @@ class OnlineCosts:
                 self.npu[(self._version(k), bool(active))].add(self._blocks(k), seconds)
 
     def observe_step(self, seconds: float, prefill_chunk: bool, npu_busy: bool) -> None:
-        """One decode step's wall time; with a prefill chunk riding along, or while the NPU
-        worker prefills. A decoder gets one token per step, so the speed it keeps is
-        plain step time / this step's time."""
+        """One decode step's wall time; plain steps (no prefill chunk, NPU idle) set the
+        baseline decode step that ``observe_window`` compares against."""
+        if prefill_chunk or npu_busy:
+            return
         with self._lock:
-            if not prefill_chunk and not npu_busy:
-                p = self._plain_step
-                p.value = seconds if p.n == 0 else p.value
-                p.add(seconds)
-                return
+            p = self._plain_step
+            p.value = seconds if p.n == 0 else p.value
+            p.add(seconds)
+
+    @property
+    def plain_step_s(self) -> float | None:
+        return self._plain_step.value if self._plain_step.n >= 3 else None
+
+    def observe_window(self, device: str, seconds: float, steps: int) -> float | None:
+        """A request placed on ``device`` ("igpu" or "npu") took ``seconds`` from arrival to its
+        first token while the others completed ``steps`` decode steps: they kept
+        steps x plain step / seconds of their speed. Returns the keep observed (None: no
+        baseline yet, or a device whose keep is not tracked)."""
+        if device not in ("igpu", "npu") or seconds <= 0:
+            return None
+        with self._lock:
             if self._plain_step.n < 3:
-                return  # no baseline yet
-            keep = min(1.0, self._plain_step.value / seconds)
-            (self.keep_igpu if prefill_chunk else self.keep_npu).add(keep)
+                return None
+            keep = min(1.0, steps * self._plain_step.value / seconds)
+            (self.keep_igpu if device == "igpu" else self.keep_npu).add(keep)
+            return keep
 
     def summary(self) -> dict:
         with self._lock:
