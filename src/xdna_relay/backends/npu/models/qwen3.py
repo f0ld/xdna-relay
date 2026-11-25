@@ -10,15 +10,16 @@ Projections default to ``Precision.MEDIUM`` (bfp16 macs): for prefill the KV it 
 decodes identically on Llama 3B (bench/results/2026-11-24-iron-prefill-profile.md); override
 per executor (``IronLmExecutor(precision=...)``).
 
-No tuned profile of its own: IRON's Llama profile directory is used, whose entries match
-only the shapes Qwen3 shares with Llama; others take each operator's defaults.
+Profile: ``profiles/qwen3/<device>.json`` = IRON's Llama profile plus entries for Qwen3's
+own shapes. Without the MHA entry for 32 heads x d=128 (8B), MHA runs at its defaults,
+~10x slower (206 vs ~20 ms per layer-chunk; bench/results/2026-11-25-qwen3-iron.md).
 """
 from __future__ import annotations
 
 import dataclasses
+from pathlib import Path
 
 from iron import Precision, lm
-from iron.applications.llama.model import Llama
 from iron.lm import CausalLM, DecoderConfig, DecoderLayer
 from iron.lm.blocks import Attention
 
@@ -42,7 +43,7 @@ class Qwen3(CausalLM):
 
     config = Qwen3Config
     layer_class = Qwen3Layer
-    profile = Llama.profile
+    profile = Path(__file__).with_name("profiles") / "qwen3"
 
 
 if __name__ == "__main__":

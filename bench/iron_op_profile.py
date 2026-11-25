@@ -24,17 +24,15 @@ def main():
     ap.add_argument("--hf", required=True)
     ap.add_argument("--rows", type=int, default=1494)
     ap.add_argument("--max-seq-len", type=int, default=2048)
-    ap.add_argument("--model", default="llama")
+    ap.add_argument("--model", default=None, help="default: from config.json model_type")
     ap.add_argument("--rounds", type=int, default=4)
     ap.add_argument("--calls", type=int, default=10)
     ap.add_argument("--precision", choices=["highest", "high", "medium"], help="override the model's")
     ap.add_argument("--chunk", type=int, help="prefill_chunk override (rows per prompt-graph call)")
     ap.add_argument("--only", help="time only operators whose class name starts with this")
     a = ap.parse_args()
-    if a.model == "llama":
-        from iron.applications.llama.model import Llama as cls
-    else:
-        raise SystemExit(f"unknown model {a.model}")
+    from xdna_relay.backends.npu.iron_lm import model_for
+    cls = model_for(a.hf)
 
     import dataclasses
     weights = weights_file(a.hf)
