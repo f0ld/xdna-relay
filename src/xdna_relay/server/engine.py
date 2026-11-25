@@ -9,7 +9,8 @@ optional draft context for speculative decoding. A request runs in its caller's 
 3. NPU (or split): the worker prefills, the KV goes into the slot (``worker_to_llama``);
 4. ``generate`` prefills the rest (reusing what the slot holds), then decodes, streaming
    tokens through ``on_token``; the slot's state goes into the prefix cache afterwards;
-5. the measured prefill time refines the policy (``observe``).
+5. the measured prefill parts refine the policy; with online calibration (``sched.online``)
+   the stepper's step times also measure how much a prefill slows the decoders.
 
 The NPU worker is one process (IRON holds the GIL; T-017), used by one request at a time.
 
@@ -107,7 +108,8 @@ class Engine:
             s.target.reset()
         if policy is None:
             from xdna_relay.sched.placement import DeviceCosts
-            policy = PlacementPolicy(DeviceCosts(400.0, 0.02, 0.6, 1e-4, 1.25, 1.25, 0.2, 0.5))
+            # no measured preset: a rough prior, calibrated online from what this engine measures
+            policy = PlacementPolicy.calibrating(DeviceCosts(400.0, 0.02, 0.6, 1e-4, 1.25, 1.25, 0.2, 0.5))
         policy.npu_available = self.npu is not None
         policy.npu_max_tokens = npu_max_seq_len
         self.policy = policy
@@ -184,10 +186,17 @@ class Engine:
                 res.npu_tokens = k
                 with self._npu_lock:
                     self._npu_free_at = time.perf_counter() + choice.ttft_s
+                    t_h = time.perf_counter()
                     worker_to_llama(self.npu, slot.target, prompt[:k])
-                t = self.npu.last_timing
-                self.policy.observe("npu", n_npu if choice.device == "npu" else k,
-                                    t.get("eval", 0.0), active)
+                    t_h = time.perf_counter() - t_h
+                if self.policy.online is not None:
+                    # the NPU part as the cost model composes it: eval + pack + handoff
+                    n_part = (n_npu if choice.device == "npu" else k)
+                    self.policy.observe_part("npu", n_part, t_h, active)
+                else:
+                    t = self.npu.last_timing
+                    self.policy.observe("npu", n_npu if choice.device == "npu" else k,
+                                        t.get("eval", 0.0), active)
 
             if self.batched:
                 self._complete_batched(slot, prompt, max_tokens, on_token, res, t0, active, choice)
@@ -274,6 +283,8 @@ class Engine:
                 owners.append(job)
             finished = [e for e in entries if e.cancel]
             if parts:
+                npu_busy = self._npu_lock.locked()
+                t_step = time.perf_counter()
                 try:
                     out = self.shared.step(parts)
                 except Exception:
@@ -285,6 +296,9 @@ class Engine:
                     raise
                 self.steps += 1
                 self.step_rows += len(dec)
+                if dec and self.policy.online is not None:
+                    self.policy.online.observe_step(time.perf_counter() - t_step,
+                                                    prefill_chunk=bool(pre), npu_busy=npu_busy)
                 now = time.perf_counter()
                 for e, (_, toks, _), r in zip(owners, parts, out):
                     if e.pending:  # the prefill chunk
@@ -309,7 +323,12 @@ class Engine:
         if info is not None:
             res.reused = info.reused_live + info.reused_cache
             res.evaluated = info.evaluated
-            if choice.device == "igpu" and info.evaluated > 1:
+            if self.policy.online is not None:
+                # the iGPU part: whatever it evaluated (all of it, a split's tail, or the
+                # last token after a handoff), submit to first token
+                if info.evaluated > 0 and info.t_eval > 0:
+                    self.policy.observe_part("igpu", info.evaluated, info.t_eval, active)
+            elif choice.device == "igpu" and info.evaluated > 1:
                 self.policy.observe("igpu", info.evaluated, info.t_eval, active)
 
     def reset_state(self) -> None:

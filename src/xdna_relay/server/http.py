@@ -57,6 +57,11 @@ def make_handler(engine, chat_template, model_name: str):
         def do_GET(self):
             if self.path == "/health":
                 return self._json(200, {"status": "ok"})
+            if self.path == "/x_relay/calibration":
+                online = getattr(engine.policy, "online", None)
+                return self._json(200, {"online": online is not None,
+                                        "fits": online.summary() if online else None,
+                                        "observations": len(engine.policy.log)})
             if self.path == "/v1/models":
                 return self._json(200, {"object": "list", "data": [
                     {"id": model_name, "object": "model", "owned_by": "xdna-relay"}]})

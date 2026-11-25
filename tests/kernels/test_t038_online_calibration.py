@@ -1,0 +1,87 @@
+"""T-038: online calibration of the placement cost model (sched/online.py).
+
+Pure logic, except the last test (engine on Qwen3-0.6B, iGPU): it checks the server engine
+feeds measured prefill parts and decode-step times into the calibrator.
+"""
+import math
+
+import numpy as np
+import pytest
+
+from xdna_relay.sched.online import LinFit, OnlineCosts
+from xdna_relay.sched.placement import PlacementPolicy, costs_for
+
+PRESET = "qwen3-8b-packed-batched"
+
+
+def test_linfit_prior_then_data():
+    f = LinFit(1.0, 2.0)
+    assert f(3.0) == pytest.approx(7.0)  # no data: the prior
+    for _ in range(200):  # true line 0.5 + 1.0 x, two lengths
+        for x in (1.0, 5.0):
+            f.add(x, 0.5 + 1.0 * x)
+    c0, c1 = f.coef()
+    assert c0 == pytest.approx(0.5, abs=0.05) and c1 == pytest.approx(1.0, abs=0.02)
+
+
+def test_linfit_single_length_stays_finite():
+    f = LinFit(1.0, 2.0)
+    for _ in range(500):
+        f.add(4.0, 5.0)  # only one x: the ridge keeps the solution determined
+    assert f(4.0) == pytest.approx(5.0, abs=0.05)
+    assert all(math.isfinite(c) for c in f.coef())
+
+
+def test_prior_reproduces_static_preset():
+    st = PlacementPolicy(costs_for(PRESET))
+    on = PlacementPolicy.calibrating(costs_for(PRESET))
+    for n in (85, 401, 1721):
+        for d in ("igpu", "npu"):
+            assert on.estimate(d, n, 1).ttft_s == pytest.approx(st.estimate(d, n, 1).ttft_s, rel=0.02), (d, n)
+
+
+def test_learns_a_slower_npu_and_flips_the_decision():
+    """A machine whose NPU part is 2x the preset's: after observing it, long prompts go to the
+    iGPU (whose own estimate stays right)."""
+    truth = OnlineCosts(costs_for(PRESET))  # the preset's own parts, as 'true' functions
+    true_npu = lambda k: 2.0 * truth.npu_s(k, 1)  # noqa: E731
+    true_igpu = lambda n: truth.igpu_s(n, 1)  # noqa: E731
+    p = PlacementPolicy.calibrating(costs_for(PRESET))
+    assert p.choose(1721, active=1).device in ("npu", "split")
+    rng = np.random.default_rng(0)
+    for _ in range(40):
+        k = int(rng.integers(300, 2000))
+        p.observe_part("npu", k, true_npu(k) * rng.normal(1, 0.03), active=1)
+        n = int(rng.integers(1, 2000))
+        p.observe_part("igpu", n, true_igpu(n) * rng.normal(1, 0.03), active=1)
+    for k in (700, 1500):
+        assert p.online.npu_s(k, 1) == pytest.approx(true_npu(k), rel=0.12), k
+    assert p.choose(1721, active=1).device == "igpu"
+
+
+def test_keep_from_step_times():
+    o = OnlineCosts(costs_for(PRESET))
+    for _ in range(20):
+        o.observe_step(0.065, prefill_chunk=False, npu_busy=False)
+    for _ in range(200):
+        o.observe_step(0.30, prefill_chunk=True, npu_busy=False)
+        o.observe_step(0.10, prefill_chunk=False, npu_busy=True)
+    assert o.keep_igpu.value == pytest.approx(0.065 / 0.30, abs=0.02)
+    assert o.keep_npu.value == pytest.approx(0.065 / 0.10, abs=0.02)
+
+
+def test_engine_feeds_the_calibrator(igpu):
+    from tests.reference.models import QWEN3_06B_Q8, require
+    from xdna_relay.server.engine import Engine
+
+    e = Engine(require(QWEN3_06B_Q8), slots=2, n_ctx=4096)
+    try:
+        assert e.policy.online is not None  # default policy calibrates
+        for i in range(3):
+            e.complete(e.tokenize(f"<|im_start|>user\\nTell me about rivers, part {i}.<|im_end|>\\n"
+                                  "<|im_start|>assistant\\n<think>\\n\\n</think>\\n\\n"), 24)
+        s = e.policy.online.summary()
+        assert s["igpu"][0] >= 3  # three iGPU prefills observed (nothing else decoding)
+        assert s["plain_step_s"][0] > 0  # decode steps timed
+    finally:
+        e.close()

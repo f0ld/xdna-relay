@@ -118,3 +118,9 @@ Three amdxdna TDR timeouts (08:16, 09:26, 09:28) during IRON per-op timing runs 
 in the scripts. Benches now call `bench/tdr_guard.guard()`, which prints any
 `aie2_tdr_detect` kernel lines at exit ("results suspect"). Check that line before using a
 number.
+
+## Online placement calibration: prior strength vs bias (2026-11-25)
+`sched/online.LinFit` pulls toward the preset (ridge, `tau`) so data at a single prompt length
+cannot make the fit degenerate. With `tau=2, forget=0.95` (~20 effective observations) the
+intercept stayed 0.07 s off a true 0.5 s after hundreds of observations: prefill intercepts are
+0.1–0.5 s, so that bias decides placements. Now `tau=1, forget=0.97` (T-038 test).

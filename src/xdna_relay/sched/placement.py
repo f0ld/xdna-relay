@@ -129,6 +129,13 @@ class PlacementPolicy:
     npu_available: bool = True
     npu_max_tokens: int = 2048  # the NPU executor's max_seq_len
     log: list = field(default_factory=list)
+    online: object | None = None  # sched.online.OnlineCosts: fitted parts replace the preset
+
+    @classmethod
+    def calibrating(cls, costs: DeviceCosts, **kw) -> "PlacementPolicy":
+        """A policy whose estimates start at ``costs`` and follow what ``observe_*`` measure."""
+        from .online import OnlineCosts
+        return cls(costs, online=OnlineCosts(costs), **kw)
 
     def _igpu_s(self, n: int, active: int) -> float:
         c = self.costs
@@ -141,6 +148,8 @@ class PlacementPolicy:
         """Estimated TTFT and lost decode time of prefilling ``n`` tokens on ``device`` while
         ``active`` requests decode on the iGPU; ``npu_busy_s``: until the NPU is free.
         ``split``: the NPU prefills the first ``npu_tokens``, the iGPU the rest."""
+        if self.online is not None:
+            return self._estimate_online(device, n, active, npu_busy_s, npu_tokens)
         c = self.costs
         # Decoders lose speed only while a prefill computes: not during the fixed waits
         # (the iGPU prefill queued behind their decode steps; the handoff), nor while a
@@ -167,6 +176,26 @@ class PlacementPolicy:
             raise ValueError(device)
         return Choice(device, t, lost, t + self.decode_weight * lost, npu_tokens=k)
 
+    def _estimate_online(self, device, n, active, npu_busy_s, npu_tokens) -> Choice:
+        """Composed from fitted parts: NPU(k) + iGPU(n - k), k = 0 / n - 1 / whole blocks."""
+        o, c = self.online, self.costs
+        if device == "igpu":
+            k = 0
+        elif device == "npu":
+            k = n - 1 if n > 1 else 0
+        elif device == "split":
+            k = npu_tokens if npu_tokens is not None else n // c.npu_block * c.npu_block
+        else:
+            raise ValueError(device)
+        npu_t = o.npu_s(k, active)
+        igpu_t = o.igpu_s(n - k, active)
+        t = (npu_busy_s if k else 0.0) + npu_t + igpu_t
+        # decoders lose speed while a part computes (fixed waits included: online fits do not
+        # separate them; the keep estimates are measured per step and absorb it)
+        lost = active * (npu_t * (1.0 - o.keep_npu.value) + igpu_t * (1.0 - o.keep_igpu.value))
+        dev = device if not (device == "npu" and k == 0) else "igpu"
+        return Choice(dev, t, lost, t + self.decode_weight * lost, npu_tokens=k)
+
     def choose(self, n: int, active: int, npu_busy_s: float = 0.0, n_npu: int | None = None,
                total: int | None = None) -> Choice:
         """Where to prefill a request with ``active`` requests decoding on the iGPU.
@@ -187,6 +216,17 @@ class PlacementPolicy:
         opts.sort(key=lambda o: o.cost)
         opts[0].other = opts[1]
         return opts[0]
+
+    def observe_part(self, device: str, n: int, seconds: float, active: int) -> None:
+        """A measured prefill part (online calibration): ``device`` "igpu" for n tokens the
+        iGPU evaluated, "npu" for n tokens the NPU prefilled and handed over."""
+        if self.online is None:
+            return self.observe(device, n, seconds, active)
+        if device == "igpu":
+            self.online.observe_igpu(n, seconds, active)
+        else:
+            self.online.observe_npu(n, seconds, active)
+        self.log.append((device, n, seconds, active))
 
     def observe(self, device: str, n: int, seconds: float, active: int) -> None:
         """Refine the device model from a measured prefill of ``n`` tokens (device time

@@ -33,6 +33,8 @@ def main(argv=None):
     ap.add_argument("--npu-max-seq-len", type=int, default=2048)
     ap.add_argument("--preset", choices=presets(), help="measured placement costs for this model pair")
     ap.add_argument("--placement", default="auto", choices=["auto", "igpu", "npu", "split"])
+    ap.add_argument("--no-calibrate", action="store_true",
+                    help="keep the preset fixed (default: fit it online from measured prefills)")
     ap.add_argument("--cache-mib", type=int, default=4096, help="prefix cache budget (host RAM)")
     ap.add_argument("--no-think", action="store_true", help="Qwen3: enable_thinking=False by default")
     ap.add_argument("--name", help="model id reported by /v1/models")
@@ -51,7 +53,11 @@ def main(argv=None):
     preset = a.preset
     if preset and batched and f"{preset}-batched" in presets():
         preset = f"{preset}-batched"  # measured on the batched engine
-    policy = PlacementPolicy(costs_for(preset)) if preset else None
+    if preset:
+        costs = costs_for(preset)
+        policy = PlacementPolicy(costs) if a.no_calibrate else PlacementPolicy.calibrating(costs)
+    else:
+        policy = None
     engine = Engine(a.gguf, slots=a.slots, n_ctx=a.ctx, draft_gguf=a.draft, hf_dir=a.hf, npu=a.npu,
                     packed=a.packed, npu_max_seq_len=a.npu_max_seq_len, policy=policy,
                     placement=a.placement, cache_bytes=a.cache_mib << 20,
