@@ -144,6 +144,7 @@ class LlamaSeqExecutor(Executor):
         self.n_vocab = ctx.n_vocab
         self.n_batch = ctx.n_batch
         self.n_ctx = ctx.n_ctx_seq
+        self.kv_streams = 1 if ctx.n_ctx_seq == ctx.n_ctx else ctx.n_seq  # streams in its state
         self.n_past = 0
         self.held: list[int] = []
         self._last_decode = -1

@@ -46,7 +46,10 @@ def main():
         ta = threading.Thread(target=lambda: res.__setitem__("a", stream(
             a.url, [{"role": "user", "content": f"[{run}] " + A_TEXT}], a.gen_a, a_st)))
         ta.start()
-        while not a_st:
+        deadline = time.perf_counter() + 300
+        while not a_st:  # A's first token (give up if the server never answers)
+            if not ta.is_alive() or time.perf_counter() > deadline:
+                raise SystemExit("request A produced no token: server down?")
             time.sleep(0.01)
         time.sleep(1.0)
         tb0 = time.perf_counter()

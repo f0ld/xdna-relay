@@ -15,7 +15,7 @@ from xdna_relay.sched.executor import Snapshot
 
 from . import llama_state as ls
 
-_TEMPLATES: dict[str, ls.KVState] = {}
+_TEMPLATES: dict[tuple, ls.KVState] = {}
 
 
 @dataclass
@@ -28,16 +28,19 @@ class HandoffInfo:
 
 
 def _template(dst, token: int) -> ls.KVState:
-    """Header fields of ``dst``'s cache, from a one-token snapshot (cached per model)."""
-    if dst.name not in _TEMPLATES:
+    """Header fields of ``dst``'s cache, from a one-token snapshot (cached per model and KV
+    stream count: a context with a KV buffer per sequence writes one stream per buffer, and
+    llama.cpp refuses a blob with another stream count)."""
+    key = (dst.name, getattr(dst, "kv_streams", 1))
+    if key not in _TEMPLATES:
         held = list(dst.held)
         dst.reset()
         dst.eval([token])
-        _TEMPLATES[dst.name] = ls.parse(dst.snapshot().data.tobytes())
+        _TEMPLATES[key] = ls.parse(dst.snapshot().data.tobytes())
         dst.reset()
         if held:  # leave dst as found
             dst.eval(held)
-    return _TEMPLATES[dst.name]
+    return _TEMPLATES[key]
 
 
 def npu_to_llama(src, dst, n: int | None = None, interleave_k: bool | None = None) -> HandoffInfo:
