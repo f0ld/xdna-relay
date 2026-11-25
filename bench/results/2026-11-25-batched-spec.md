@@ -52,3 +52,15 @@ fifth of an 8B step, so with several sequences k stays at 1–2.
 - NPU prefill on this prompt flips a 0.02-logit near-tie at token 5 even without drafting
   (T-031's "identical tokens" held for its prompts only); T-041's NPU test uses the near-tie
   rule.
+
+## Follow-ups (same day)
+
+- T-036 re-measured with pass counting in mind (2 slots, KV 300 / 1500): per-sequence KV:
+  mixed [1,256] = decode [1] + prefill [256] (773 vs 779 ms; 837 vs 840): two passes either
+  way, so mixing cannot gain. Unified KV: mixed is one pass but *slower* (846 vs 782; 936 vs
+  849): the chunk's tokens attend over both sequences' cells. T-036's conclusion stands.
+  Unified KV costs 2 slots only 2–4% on plain decode (4 slots: 13%) and runs speculative
+  [3,1] in one pass (73 vs 144 ms); not switched (BatchK already avoids uneven shapes).
+- Intermittent half-speed: not reproduced in 5 further runs (51.3–51.7 tok/s at 4 requests
+  with Chrome using ~40% GPU engine time: costs ~4%). `bench/gpu_watch.py` now records clock
+  and other GPU clients per benchmark row, so the next occurrence shows its cause.
