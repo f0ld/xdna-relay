@@ -66,3 +66,10 @@ objects (Copy's TensorAccessPattern, GEMM's dtype/epilogue): see pitfalls.
 1493 tokens in 1.61 s standalone (iGPU Q4_K_M alone ~2.0 s), ~2.1 s while the iGPU decodes.
 Remaining per-chunk: GEMMs ~0.89 s at bfp16 (13 TFLOPS on the big ones), MHA 0.58 s, rest
 ~0.14 s. NPU power mode is `default`; `performance` needs root (untested).
+
+## NPU power mode `performance` (2026-11-25, `xrt-smi configure --pmode performance`)
+Platform `balanced`, on AC. Standalone 1493-token eval: 1.61 s (unchanged from `default`).
+Two requests (3B, medium): iGPU mode A 6.0–8.9 tok/s, B TTFT 1.85–2.01 s, makespan 8.3 s;
+NPU mode A 19.5–19.6 tok/s, B TTFT 2.30 s (was 2.39), makespan 7.8 s; NPU eval under iGPU
+load 2.02 s (was 2.12). Performance mode buys ~5% only under contention: the NPU is not
+clock-limited here.
