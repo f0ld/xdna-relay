@@ -190,9 +190,8 @@ class PlacementPolicy:
         npu_t = o.npu_s(k, active)
         igpu_t = o.igpu_s(n - k, active)
         t = (npu_busy_s if k else 0.0) + npu_t + igpu_t
-        # decoders lose speed while a part computes (fixed waits included: online fits do not
-        # separate them; the keep estimates are measured per step and absorb it)
-        lost = active * (npu_t * (1.0 - o.keep_npu.value) + igpu_t * (1.0 - o.keep_igpu.value))
+        # decode-seconds the others lose, fitted per part from measured request windows
+        lost = active * (o.npu_lost_s(k) + o.igpu_lost_s(n - k))
         dev = device if not (device == "npu" and k == 0) else "igpu"
         return Choice(dev, t, lost, t + self.decode_weight * lost, npu_tokens=k)
 

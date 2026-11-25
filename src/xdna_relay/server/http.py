@@ -69,6 +69,7 @@ def make_handler(engine, chat_template, model_name: str):
             self._json(404, {"error": {"message": f"no route {self.path}"}})
 
         def do_POST(self):
+            self._t_arrival = time.perf_counter()
             try:
                 req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
             except json.JSONDecodeError as e:
@@ -115,7 +116,7 @@ def make_handler(engine, chat_template, model_name: str):
                 acc.append(out.add(tok))
                 return bool(stops) and self._finish("".join(acc), stops)[1]
 
-            res = engine.complete(prompt, max_tokens, on_token)
+            res = engine.complete(prompt, max_tokens, on_token, t_arrival=self._t_arrival)
             text, hit = self._finish("".join(acc) + (engine.detokenize(out.tokens)[out.sent:]), stops)
             reason = "stop" if hit or (res.tokens and engine.is_eog(res.tokens[-1])) else "length"
             usage = {"prompt_tokens": len(prompt), "completion_tokens": len(res.tokens),
@@ -174,7 +175,7 @@ def make_handler(engine, chat_template, model_name: str):
                     return True
                 return not chunk(piece)
 
-            res = engine.complete(prompt, max_tokens, on_token)
+            res = engine.complete(prompt, max_tokens, on_token, t_arrival=self._t_arrival)
             if state["gone"]:
                 return
             reason = "stop" if state["hit"] or (res.tokens and engine.is_eog(res.tokens[-1])) else "length"

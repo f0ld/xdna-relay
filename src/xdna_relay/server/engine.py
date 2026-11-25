@@ -168,7 +168,8 @@ class Engine:
             choice = self.policy.estimate("split", limit, active, busy, npu_tokens=k)
         return choice, active, n_igpu, n_npu
 
-    def complete(self, prompt: list[int], max_tokens: int = 256, on_token=None) -> Result:
+    def complete(self, prompt: list[int], max_tokens: int = 256, on_token=None,
+                 t_arrival: float | None = None) -> Result:
         """Generate greedily after ``prompt`` (token ids); ``on_token(t) -> bool`` streams each
         token and returns True to stop."""
         if len(prompt) < 1:
@@ -176,7 +177,9 @@ class Engine:
         from xdna_relay.kv.handoff import worker_to_llama
 
         res = Result()
-        t0 = time.perf_counter()
+        # TTFT and the others' loss count from the request's arrival (HTTP parsing, chat
+        # template and tokenizing run in Python, under the GIL, beside the stepper)
+        t0 = t_arrival if t_arrival is not None else time.perf_counter()
         slot = self._take_slot(prompt)
         res.slot = slot.index
         self.requests += 1
@@ -265,7 +268,8 @@ class Engine:
             # how much the others kept while this request was prefilled (arrival -> first token)
             t_first = t0 + res.ttft_s
             steps = sum(1 for t in list(self._step_ends) if t0 <= t <= t_first)
-            res.keep_observed = self.policy.online.observe_window(choice.device, res.ttft_s, steps)
+            n_dev = res.npu_tokens if choice.device == "npu" else info.evaluated
+            res.keep_observed = self.policy.online.observe_window(choice.device, res.ttft_s, steps, n_dev)
 
     def _stepper(self) -> None:
         """Each step, one llama_decode: every decoding sequence's next token, plus the next

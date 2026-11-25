@@ -76,6 +76,22 @@ def test_keep_from_request_windows():
     assert o.observe_window("split", 1.3, 15) is None
 
 
+def test_lost_time_fitted_per_size():
+    """Short iGPU prefills cost the others little, long ones a lot: fitted per size, so both
+    are right (one keep fraction could not be)."""
+    o = OnlineCosts(costs_for(PRESET))
+    for _ in range(5):
+        o.observe_step(0.065, prefill_chunk=False, npu_busy=False)
+    for _ in range(40):
+        o.observe_window("igpu", 0.45, 3, n=83)  # lost 0.255
+        o.observe_window("igpu", 1.45, 4, n=398)  # lost 1.19
+        o.observe_window("igpu", 5.40, 11, n=1718)  # lost 4.685
+        o.observe_window("npu", 1.68, 17, n=397)  # lost 0.575
+    assert o.igpu_lost_s(398) == pytest.approx(1.19, rel=0.1)
+    assert o.igpu_lost_s(1718) == pytest.approx(4.685, rel=0.05)
+    assert o.npu_lost_s(397) == pytest.approx(0.575, rel=0.1)
+
+
 def test_engine_feeds_the_calibrator(igpu):
     from tests.reference.models import QWEN3_06B_Q8, require
     from xdna_relay.server.engine import Engine

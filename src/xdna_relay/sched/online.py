@@ -99,8 +99,16 @@ class OnlineCosts:
         for version, (fx, blk) in self._versions().items():
             self.npu[(version, False)] = mk(fx, blk + hb)
             self.npu[(version, True)] = mk(fx * p.npu_slow + p.npu_wait_s - last, blk * p.npu_slow)
-        self.keep_igpu = Ema(p.keep_igpu, alpha=0.2)  # one observation per request now
+        self.keep_igpu = Ema(p.keep_igpu, alpha=0.2)  # one observation per request (reporting)
         self.keep_npu = Ema(p.keep_npu, alpha=0.2)
+        # decode-seconds one other decoder loses while a request is prefilled, fitted like the
+        # times (same features): short iGPU prefills are mostly a fixed wait during which the
+        # others keep stepping, long ones stall them, so one keep fraction cannot fit both
+        # (measured keep_iGPU 0.31-0.46 at 82-139 tokens, 0.13-0.19 at 398-1327).
+        self.lost_igpu = {sm: mk(*(c * (1 - p.keep_igpu) for c in self.igpu[(True, sm)].coef()))
+                          for sm in (False, True)}
+        self.lost_npu = {v: mk(*(c * (1 - p.keep_npu) for c in self.npu[(v, True)].coef()))
+                         for v in ("short", "long")}
         self._plain_step = Ema(0.0, alpha=0.1)
 
     def _versions(self) -> dict:
@@ -155,19 +163,42 @@ class OnlineCosts:
     def plain_step_s(self) -> float | None:
         return self._plain_step.value if self._plain_step.n >= 3 else None
 
-    def observe_window(self, device: str, seconds: float, steps: int) -> float | None:
-        """A request placed on ``device`` ("igpu" or "npu") took ``seconds`` from arrival to its
-        first token while the others completed ``steps`` decode steps: they kept
-        steps x plain step / seconds of their speed. Returns the keep observed (None: no
-        baseline yet, or a device whose keep is not tracked)."""
+    def observe_window(self, device: str, seconds: float, steps: int, n: int = 0) -> float | None:
+        """A request placed on ``device`` ("igpu" or "npu"; ``n`` tokens on it) took ``seconds``
+        from arrival to its first token while the others completed ``steps`` decode steps: each
+        lost seconds - steps x plain step of decode time (fitted per device and size) and kept
+        steps x plain step / seconds of its speed (reported). Returns the keep (None: no
+        baseline yet, or a placement not tracked: split mixes both)."""
         if device not in ("igpu", "npu") or seconds <= 0:
             return None
         with self._lock:
             if self._plain_step.n < 3:
                 return None
-            keep = min(1.0, steps * self._plain_step.value / seconds)
-            (self.keep_igpu if device == "igpu" else self.keep_npu).add(keep)
+            ran = min(seconds, steps * self._plain_step.value)
+            keep = ran / seconds
+            lost = seconds - ran
+            if device == "igpu":
+                self.keep_igpu.add(keep)
+                if n > 0:
+                    self.lost_igpu[n <= SMALL].add(n / 1000.0, lost)
+            else:
+                self.keep_npu.add(keep)
+                if n > 0:
+                    self.lost_npu[self._version(n)].add(self._blocks(n), lost)
             return keep
+
+    def igpu_lost_s(self, n: int) -> float:
+        """Decode-seconds one decoder loses while the iGPU prefills n tokens."""
+        if n <= 0:
+            return 0.0
+        with self._lock:
+            return max(0.0, self.lost_igpu[n <= SMALL](n / 1000.0))
+
+    def npu_lost_s(self, k: int) -> float:
+        if k <= 0:
+            return 0.0
+        with self._lock:
+            return max(0.0, self.lost_npu[self._version(k)](self._blocks(k)))
 
     def summary(self) -> dict:
         with self._lock:
@@ -175,6 +206,10 @@ class OnlineCosts:
                    for (a, sm), f in self.igpu.items()}
             out.update({f"npu:{v}{'+' if a else ''}": (f.n, *map(lambda x: round(x, 4), f.coef()))
                         for (v, a), f in self.npu.items()})
+            out.update({f"lost_igpu{':small' if sm else ''}": (f.n, *map(lambda x: round(x, 4), f.coef()))
+                        for sm, f in self.lost_igpu.items()})
+            out.update({f"lost_npu:{v}": (f.n, *map(lambda x: round(x, 4), f.coef()))
+                        for v, f in self.lost_npu.items()})
             out["keep_igpu"] = (self.keep_igpu.n, round(self.keep_igpu.value, 3))
             out["keep_npu"] = (self.keep_npu.n, round(self.keep_npu.value, 3))
             out["plain_step_s"] = (self._plain_step.n, round(self._plain_step.value, 4))
