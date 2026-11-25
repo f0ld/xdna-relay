@@ -70,6 +70,14 @@ _PRESETS: dict[str, DeviceCosts] = {
         igpu_slow=1.259, npu_slow=1.229, keep_igpu=3.2 / 15.8, keep_npu=8.4 / 15.8,
         igpu_wait_s=0.527, npu_wait_s=0.251,
         source="bench/results/2026-11-25-placement.md"),
+    # Qwen3-8B with packed bfp16 projections (T-033): NPU alone 0.510 s + 0.362 s/256 rows;
+    # B TTFT under A, 67/382/1702 tokens: NPU 1.32-1.36 / 1.90-1.95 / 4.63 s (fit 1%); iGPU
+    # side as "qwen3-8b". A during the NPU's 1702-token prefill 10.4 tok/s (alone ~15).
+    "qwen3-8b-packed": DeviceCosts(
+        igpu_prefill_tps=404.0, npu_fixed_s=0.510, npu_block_s=0.362, handoff_row_s=250e-3 / 1702,
+        igpu_slow=1.259, npu_slow=1.507, keep_igpu=3.2 / 15.8, keep_npu=10.4 / 15.0,
+        igpu_wait_s=0.527, npu_wait_s=0.043,
+        source="bench/results/2026-11-25-packed-gemm.md"),
 }
 
 

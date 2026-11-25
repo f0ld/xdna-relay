@@ -101,3 +101,14 @@ llama.cpp caches **Llama's** K in interleaved RoPE pairs (GGUF conversion permut
 but **Qwen's** in Hugging Face's two halves (NEOX RoPE, no permutation). Permuting Qwen3's K
 gives K rel.err 1.41 and garbage tokens. `IronLmExecutor.llama_cpp_k_interleaved` (from
 `config.json` `model_type`) decides it; handoff and worker follow it.
+
+## IRON NPU prefill re-reads weights per 256-row unit (2026-11-25)
+`flm.ProjectionGEMM` streams all of B from DDR for every 256-row unit a call reaches, so
+prompt chunks are weight-bandwidth bound (~22 GB/s) and time steps every 256 rows.
+`m_chunk > 1` is refused under a per-call row bound. Pre-packed bfp16 B (`bfp16_b=True`,
+`models/packed.py`) halves the bytes. A packed B can't be an `iron.param` (numpy has no
+block-float dtype): hold it as an `iron.State(..., v8bfp16ebs8)` and write its bytes via the
+compiled graph's storage (`CompiledGraph.write` slices by block count, not bytes). mlir-aie's
+`Device.dma_bd_fits` raises `TypeError: Converting np.generic to a dtype` for large bfp
+transfers: patched in `models/packed.py`. `load_versions(release=...)` frees host weights:
+pack before or skip the release.

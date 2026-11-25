@@ -22,15 +22,17 @@ def _model_type(hf_dir: str) -> str | None:
     return json.loads((Path(hf_dir) / "config.json").read_text()).get("model_type")
 
 
-def model_for(hf_dir: str):
+def model_for(hf_dir: str, packed: bool = False):
     """The IRON model class for a checkpoint, by its ``config.json`` ``model_type``."""
     kind = _model_type(hf_dir)
+    if packed and kind != "qwen3":
+        raise ValueError(f"packed projections: Qwen3 only, not {kind!r}")
     if kind == "llama":
         from iron.applications.llama.model import Llama
         return Llama
     if kind == "qwen3":
-        from xdna_relay.backends.npu.models.qwen3 import Qwen3
-        return Qwen3
+        from xdna_relay.backends.npu.models.qwen3 import Qwen3, Qwen3Packed
+        return Qwen3Packed if packed else Qwen3
     raise ValueError(f"{hf_dir}: no IRON model for model_type {kind!r}")
 
 
@@ -58,23 +60,30 @@ def _variant(model_class, precision: str | None, profile_dir: str | None):
 
 class IronLmExecutor(Executor):
     def __init__(self, hf_dir: str, model_class=None, max_seq_len: int = 2048, name: str | None = None,
-                 precision: str | None = None, profile_dir: str | None = None):
+                 precision: str | None = None, profile_dir: str | None = None,
+                 packed: bool = False):
         """``precision``: override the model's matmul precision ("high" = bf16 macs,
         "medium" = bfp16 macs; ``iron.Precision``). IRON picks "high" from 3B up.
         ``profile_dir``: a directory of tuned operator settings (``<device>.json``,
-        ``bench/iron_tune.py``) in place of the application's shipped one."""
+        ``bench/iron_tune.py``) in place of the application's shipped one.
+        ``packed``: prompt-chunk GEMMs on pre-packed bfp16 weights (T-033; Qwen3 only)."""
         if model_class is None:
-            model_class = model_for(hf_dir)
+            model_class = model_for(hf_dir, packed=packed)
         if precision or profile_dir:
             model_class = _variant(model_class, precision, profile_dir)
         self.model = model_class.from_checkpoint(hf_dir, max_seq_len=max_seq_len)
         # llama.cpp's K channel order for this architecture: GGUF conversion permutes Llama's
         # q/k weights to interleaved RoPE pairs; Qwen (NEOX RoPE) keeps HF's two halves.
         self.llama_cpp_k_interleaved = _model_type(hf_dir) == "llama"
-        self.model.load_versions(release=self.model.checkpoint.release)
+        # packing reads the bf16 weights after upload: keep the host copies then
+        self.model.load_versions(release=None if packed else self.model.checkpoint.release)
+        if packed:
+            from xdna_relay.backends.npu.models.packed import fill_packed
+            self.packed_bytes = fill_packed(self.model)
         self.session = self.model.session
         self.tok = self.model.tokenizer
-        self.name = name or f"iron:{hf_dir.rstrip('/').split('/')[-1]}" + (f"@{precision}" if precision else "")
+        self.name = name or (f"iron:{hf_dir.rstrip('/').split('/')[-1]}" + (f"@{precision}" if precision else "")
+                             + ("+packed" if packed else ""))
         self.n_ctx = max_seq_len
         self.held: list[int] = []
         self.n_past = 0

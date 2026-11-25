@@ -38,12 +38,29 @@ class Qwen3Layer(DecoderLayer):
         super().__init__(c, i, self_attn=Attention(c, i, norms="qk", o_bias=c.attention_bias))
 
 
+class Qwen3PackedLayer(DecoderLayer):
+    """``Qwen3Layer`` whose prompt-chunk projections read pre-packed bfp16 weights (T-033)."""
+
+    def __init__(self, c: Qwen3Config, i: int):
+        from .packed import PackedAttention, PackedGatedMLP
+
+        super().__init__(c, i, self_attn=PackedAttention(c, i, norms="qk", o_bias=c.attention_bias),
+                         mlp=PackedGatedMLP(c))
+
+
 class Qwen3(CausalLM):
     """Qwen3 on ``config``'s shape and a checkpoint's ``weights``."""
 
     config = Qwen3Config
     layer_class = Qwen3Layer
     profile = Path(__file__).with_name("profiles") / "qwen3"
+
+
+class Qwen3Packed(Qwen3):
+    """Qwen3 with packed bfp16 prompt-chunk projections; call ``packed.fill_packed`` after
+    ``load_versions`` (``IronLmExecutor(packed=True)`` does)."""
+
+    layer_class = Qwen3PackedLayer
 
 
 if __name__ == "__main__":

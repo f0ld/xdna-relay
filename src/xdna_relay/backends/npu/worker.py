@@ -39,11 +39,12 @@ def _pack(k: np.ndarray, v: np.ndarray, kd: np.ndarray, vd: np.ndarray, interlea
 
 
 def _serve(conn, hf_dir: str, max_seq_len: int, precision: str | None = None,
-           profile_dir: str | None = None) -> None:
+           profile_dir: str | None = None, packed: bool = False) -> None:
     from xdna_relay.backends.npu.iron_lm import IronLmExecutor
     from xdna_relay.kv import llama_state as ls
 
-    ex = IronLmExecutor(hf_dir, max_seq_len=max_seq_len, precision=precision, profile_dir=profile_dir)
+    ex = IronLmExecutor(hf_dir, max_seq_len=max_seq_len, precision=precision, profile_dir=profile_dir,
+                        packed=packed)
     pool = ThreadPoolExecutor(4)  # numpy casts release the GIL; this process has no other work
     conn.send(("ready", ex.name))
     while True:
@@ -75,10 +76,10 @@ def _serve(conn, hf_dir: str, max_seq_len: int, precision: str | None = None,
 
 class NpuWorker:
     def __init__(self, hf_dir: str, max_seq_len: int = 2048, precision: str | None = None,
-                 profile_dir: str | None = None):
+                 profile_dir: str | None = None, packed: bool = False):
         ctx = mp.get_context("spawn")
         self.conn, child = ctx.Pipe()
-        self.proc = ctx.Process(target=_serve, args=(child, hf_dir, max_seq_len, precision, profile_dir), daemon=True)
+        self.proc = ctx.Process(target=_serve, args=(child, hf_dir, max_seq_len, precision, profile_dir, packed), daemon=True)
         self.proc.start()
         tag, self.name = self.conn.recv()
         assert tag == "ready"

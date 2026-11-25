@@ -98,6 +98,7 @@ def main():
     ap.add_argument("--gen-b", type=int, default=32)
     ap.add_argument("--modes", default="igpu,hybrid")
     ap.add_argument("--preset", help="placement preset for mode auto (sched.placement.presets())")
+    ap.add_argument("--packed", action="store_true", help="T-033 packed bfp16 projections (Qwen3)")
     ap.add_argument("--precision", help="IRON matmul precision override (high, medium)")
     ap.add_argument("--profile-dir", help="IRON tuned profile directory (bench/iron_tune.py)")
     a = ap.parse_args()
@@ -109,9 +110,9 @@ def main():
         from xdna_relay.sched.placement import PlacementPolicy, costs_for
         policy = PlacementPolicy(costs_for(a.preset))
     if {"hybrid-proc", "split", "auto"} & set(modes):
-        npu = NpuWorker(a.hf, max_seq_len=2048, precision=a.precision, profile_dir=a.profile_dir)
+        npu = NpuWorker(a.hf, max_seq_len=2048, precision=a.precision, profile_dir=a.profile_dir, packed=a.packed)
     elif "hybrid" in modes:
-        npu = IronLmExecutor(a.hf, max_seq_len=2048, precision=a.precision, profile_dir=a.profile_dir)
+        npu = IronLmExecutor(a.hf, max_seq_len=2048, precision=a.precision, profile_dir=a.profile_dir, packed=a.packed)
     else:
         npu = None
     a_prompt = gpu_a.tokenize(A_TEXT)

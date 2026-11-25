@@ -101,3 +101,15 @@ def test_npu_model_matches_warm_curve():
     c = costs_for("qwen3-8b")
     for n, t in [(64, .599), (256, .697), (384, 1.166), (768, 1.813), (1493, 3.939), (2000, 4.810)]:
         assert c.npu_alone_s(n) == pytest.approx(t, rel=0.15), n
+
+
+@pytest.mark.parametrize("n,npu", [(67, 1.34), (382, 1.925), (1702, 4.63)])
+def test_packed_preset_reproduces_measurements(n, npu):
+    p = PlacementPolicy(costs_for("qwen3-8b-packed"))
+    assert p.estimate("npu", n, active=1).ttft_s == pytest.approx(npu, rel=0.15)
+
+
+def test_packed_8b_long_prompt_goes_to_npu_short_to_igpu():
+    p = PlacementPolicy(costs_for("qwen3-8b-packed"))
+    assert p.choose(1702, active=1).device in ("npu", "split")
+    assert p.choose(67, active=1).device == "igpu"
