@@ -112,3 +112,9 @@ compiled graph's storage (`CompiledGraph.write` slices by block count, not bytes
 `Device.dma_bd_fits` raises `TypeError: Converting np.generic to a dtype` for large bfp
 transfers: patched in `models/packed.py`. `load_versions(release=...)` frees host weights:
 pack before or skip the release.
+
+## NPU TDRs can pass silently (2026-11-25)
+Three amdxdna TDR timeouts (08:16, 09:26, 09:28) during IRON per-op timing runs left no error
+in the scripts. Benches now call `bench/tdr_guard.guard()`, which prints any
+`aie2_tdr_detect` kernel lines at exit ("results suspect"). Check that line before using a
+number.

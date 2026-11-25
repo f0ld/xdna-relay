@@ -9,6 +9,8 @@ from xdna_relay.backends.npu.iron_lm import IronLmExecutor
 
 
 def main():
+    from tdr_guard import guard
+    guard()
     ap = argparse.ArgumentParser()
     ap.add_argument("--hf", required=True)
     ap.add_argument("--lengths", default="64,128,256,384,512,768,1024,1493,2000")

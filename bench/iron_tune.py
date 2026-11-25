@@ -27,6 +27,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main():
+    from tdr_guard import guard
+    guard()
     ap = argparse.ArgumentParser()
     ap.add_argument("--hf", required=True)
     ap.add_argument("--model", default="llama")

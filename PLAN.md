@@ -31,7 +31,7 @@ Status values: `TODO`, `IN PROGRESS`, `REVIEW`, `DONE`, `BLOCKED` (see PROTOCOL.
 ## MN — NPU executor on IRON full-model graphs
 
 - T-022 — Run IRON `applications.llama` (Llama 3.2 1B, npu2 profile) from our venv; tok/s and
-  logits vs HF reference — Status: IN PROGRESS (runs, 13.4 tok/s decode; logits check vs reference open)
+  logits vs HF reference — Status: DONE (`scripts/test.sh T-022` 1/1; KL vs HF float32: ~1e-3 at high, 2–10e-3 at medium, as close as llama.cpp Q8_0/Q4_K_M; bench/results/2026-11-25-logits-check.md)
 - T-023 — `sched/executor.py`: executor interface (prefill, decode, verify(k tokens) → k
   logits rows, rollback(pos), kv export/import) + `NpuExecutor` over IRON `Session` +
   `RefExecutor` (PyTorch) — Status: IN PROGRESS (interface `sched/executor.py` done; NPU/Ref executors and KV export/import open)

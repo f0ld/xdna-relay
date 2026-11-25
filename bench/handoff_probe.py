@@ -35,6 +35,8 @@ def greedy_from_held(ex, last, n):
 
 
 def main():
+    from tdr_guard import guard
+    guard()
     ap = argparse.ArgumentParser()
     ap.add_argument("--hf", required=True)
     ap.add_argument("--gguf", required=True)

@@ -90,6 +90,8 @@ def run(mode, gpu_a, gpu_b, npu, a_prompt, b_prompt_toks, gen_a, gen_b, policy=N
 
 
 def main():
+    from tdr_guard import guard
+    guard()
     ap = argparse.ArgumentParser()
     ap.add_argument("--hf", required=True)
     ap.add_argument("--gguf", required=True)

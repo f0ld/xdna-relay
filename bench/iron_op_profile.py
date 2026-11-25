@@ -20,6 +20,8 @@ from iron.tune.measure import Cache, Timing, measure, pmode
 
 
 def main():
+    from tdr_guard import guard
+    guard()
     ap = argparse.ArgumentParser()
     ap.add_argument("--hf", required=True)
     ap.add_argument("--rows", type=int, default=1494)
