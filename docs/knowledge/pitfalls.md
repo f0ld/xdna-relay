@@ -95,3 +95,9 @@ already has 3B entries.
 `iron.common.declare.Profile.save` raises `TypeError: ... TensorAccessPattern is not JSON
 serializable` for profiles holding Copy entries (also GEMM's b_dtype/epilogue objects): the
 tuner's result is lost unless those entries are filtered out first.
+
+## KV handoff: K layout depends on the architecture (2026-11-25)
+llama.cpp caches **Llama's** K in interleaved RoPE pairs (GGUF conversion permutes q/k),
+but **Qwen's** in Hugging Face's two halves (NEOX RoPE, no permutation). Permuting Qwen3's K
+gives K rel.err 1.41 and garbage tokens. `IronLmExecutor.llama_cpp_k_interleaved` (from
+`config.json` `model_type`) decides it; handoff and worker follow it.

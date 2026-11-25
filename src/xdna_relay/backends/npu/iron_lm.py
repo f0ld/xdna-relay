@@ -15,6 +15,25 @@ import numpy as np
 from xdna_relay.sched.executor import Executor, Rows, Snapshot
 
 
+def _model_type(hf_dir: str) -> str | None:
+    import json
+    from pathlib import Path
+
+    return json.loads((Path(hf_dir) / "config.json").read_text()).get("model_type")
+
+
+def model_for(hf_dir: str):
+    """The IRON model class for a checkpoint, by its ``config.json`` ``model_type``."""
+    kind = _model_type(hf_dir)
+    if kind == "llama":
+        from iron.applications.llama.model import Llama
+        return Llama
+    if kind == "qwen3":
+        from xdna_relay.backends.npu.models.qwen3 import Qwen3
+        return Qwen3
+    raise ValueError(f"{hf_dir}: no IRON model for model_type {kind!r}")
+
+
 def _variant(model_class, precision: str | None, profile_dir: str | None):
     """``model_class`` with its matmul precision and/or its tuning-profile directory replaced."""
     import dataclasses
@@ -45,10 +64,13 @@ class IronLmExecutor(Executor):
         ``profile_dir``: a directory of tuned operator settings (``<device>.json``,
         ``bench/iron_tune.py``) in place of the application's shipped one."""
         if model_class is None:
-            from iron.applications.llama.model import Llama as model_class
+            model_class = model_for(hf_dir)
         if precision or profile_dir:
             model_class = _variant(model_class, precision, profile_dir)
         self.model = model_class.from_checkpoint(hf_dir, max_seq_len=max_seq_len)
+        # llama.cpp's K channel order for this architecture: GGUF conversion permutes Llama's
+        # q/k weights to interleaved RoPE pairs; Qwen (NEOX RoPE) keeps HF's two halves.
+        self.llama_cpp_k_interleaved = _model_type(hf_dir) == "llama"
         self.model.load_versions(release=self.model.checkpoint.release)
         self.session = self.model.session
         self.tok = self.model.tokenizer
@@ -97,11 +119,12 @@ class IronLmExecutor(Executor):
     def _eog(self) -> set[int]:
         if not hasattr(self, "_eog_ids"):
             ids = set()
-            for t in ("<|eot_id|>", "<|end_of_text|>", "<|eom_id|>"):
-                try:
-                    ids.add(int(self.tok.encoding.encode(t)[0]))
-                except Exception:
-                    pass
+            # Llama 3's and Qwen's end markers; a marker this vocabulary lacks encodes to
+            # several tokens and is skipped.
+            for t in ("<|eot_id|>", "<|end_of_text|>", "<|eom_id|>", "<|im_end|>", "<|endoftext|>"):
+                enc = self.tok.encoding.encode(t)
+                if len(enc) == 1:
+                    ids.add(int(enc[0]))
             self._eog_ids = ids
         return self._eog_ids
 

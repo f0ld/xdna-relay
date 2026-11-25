@@ -3,8 +3,8 @@
 IRON's host loop holds the GIL while it drives the NPU, which starves iGPU decode threads in
 the same process (measured: A's decode 29 -> 6 tok/s during an in-process NPU prefill). The
 worker owns the IronLmExecutor and writes the prefilled KV straight into shared memory as a
-complete llama.cpp sequence-state blob (``kv.llama_state.layout``): K re-ordered to llama.cpp's
-interleaved RoPE layout and both cast to the destination cache type in one pass, so the
+complete llama.cpp sequence-state blob (``kv.llama_state.layout``): K re-ordered to llama.cpp's RoPE
+layout where it differs (Llama) and both cast to the destination cache type in one pass, so the
 parent restores it without converting or copying.
 """
 from __future__ import annotations
@@ -24,13 +24,17 @@ def _f32(x: np.ndarray) -> np.ndarray:
     return x
 
 
-def _pack(k: np.ndarray, v: np.ndarray, kd: np.ndarray, vd: np.ndarray) -> None:
-    """One layer: K from HF halves to llama.cpp's interleaved pairs, both cast to the cache type."""
+def _pack(k: np.ndarray, v: np.ndarray, kd: np.ndarray, vd: np.ndarray, interleave: bool) -> None:
+    """One layer, both cast to the cache type; K from HF halves to interleaved pairs if
+    ``interleave`` (llama.cpp's Llama layout; Qwen keeps the halves)."""
     D = k.shape[-1]
-    kd = kd.reshape(k.shape)
     k = _f32(k)
-    kd[..., 0::2] = k[..., : D // 2]
-    kd[..., 1::2] = k[..., D // 2:]
+    if interleave:
+        kd = kd.reshape(k.shape)
+        kd[..., 0::2] = k[..., : D // 2]
+        kd[..., 1::2] = k[..., D // 2:]
+    else:
+        kd[:] = k.reshape(kd.shape)
     vd[:] = _f32(v).reshape(vd.shape)
 
 
@@ -60,7 +64,8 @@ def _serve(conn, hf_dir: str, max_seq_len: int, precision: str | None = None,
             t2 = time.perf_counter()
             shm = shared_memory.SharedMemory(create=True, size=ls.blob_size(tpl, n))
             _, kv, vv = ls.layout(tpl, n, out=shm.buf)
-            list(pool.map(_pack, ks, vs, kv, vv))
+            il = [ex.llama_cpp_k_interleaved] * len(ks)
+            list(pool.map(_pack, ks, vs, kv, vv, il))
             del kv, vv
             t3 = time.perf_counter()
             conn.send(("blob", (shm.name, shm.size, dict(eval=t1 - t0, export=t2 - t1, pack=t3 - t2))))

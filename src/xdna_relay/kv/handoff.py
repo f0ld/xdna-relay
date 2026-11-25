@@ -40,11 +40,15 @@ def _template(dst, token: int) -> ls.KVState:
     return _TEMPLATES[dst.name]
 
 
-def npu_to_llama(src, dst, n: int | None = None, k_layout: str = "halves") -> HandoffInfo:
+def npu_to_llama(src, dst, n: int | None = None, interleave_k: bool | None = None) -> HandoffInfo:
     """Make ``dst`` (LlamaCppExecutor) hold ``src``'s first ``n`` positions (IronLmExecutor).
 
-    ``k_layout``: the source's K channel order ("halves" = Hugging Face, IRON's).
+    ``interleave_k``: re-order K from IRON's (Hugging Face) two-halves RoPE layout to
+    interleaved pairs, as llama.cpp caches Llama (not Qwen); default: the source's
+    ``llama_cpp_k_interleaved``.
     """
+    if interleave_k is None:
+        interleave_k = src.llama_cpp_k_interleaved
     n = src.n_past if n is None else n
     if n < 1:
         raise ValueError("nothing to hand off")
@@ -52,7 +56,7 @@ def npu_to_llama(src, dst, n: int | None = None, k_layout: str = "halves") -> Ha
     t0 = time.perf_counter()
     ks, vs = src.export_kv(n)
     t1 = time.perf_counter()
-    if k_layout == "halves":
+    if interleave_k:
         ks = [ls.halves_to_interleaved(k) for k in ks]
     ks = [k.reshape(n, -1) for k in ks]
     vs = [v.reshape(n, -1) for v in vs]

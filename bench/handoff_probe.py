@@ -68,8 +68,9 @@ def main():
     def rel(x, y):
         return float(np.linalg.norm(x - y) / np.linalg.norm(y))
     for i in (0, len(ks) // 2, len(ks) - 1):
-        k_perm = ls.halves_to_interleaved(ks[i]).reshape(n, -1)
-        print(f"layer {i:2d}: K rel.err {rel(k_perm, rk[i]):.4f} (unpermuted {rel(ks[i].reshape(n, -1), rk[i]):.3f}), "
+        k_perm = (ls.halves_to_interleaved(ks[i]) if npu.llama_cpp_k_interleaved else ks[i]).reshape(n, -1)
+        k_other = (ks[i] if npu.llama_cpp_k_interleaved else ls.halves_to_interleaved(ks[i])).reshape(n, -1)
+        print(f"layer {i:2d}: K rel.err {rel(k_perm, rk[i]):.4f} (other layout {rel(k_other, rk[i]):.3f}), "
               f"V rel.err {rel(vs[i].reshape(n, -1), rv[i]):.4f}")
     gpu.reset()
     info = npu_to_llama(npu, gpu, n)

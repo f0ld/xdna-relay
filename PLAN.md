@@ -48,6 +48,7 @@ Own pieces, each an A/B against the IRON graph it replaces (Operator, 2026-11-24
 ## MS — Speculative decoding across devices
 
 - T-025 — Draft on NPU, verify on iGPU — Status: DONE (negative, ADR 0007: ~0–10% at best; FLM unusable as draft)
+- T-031 — Qwen3 graph for IRON (`backends/npu/models/qwen3.py`: Llama layer + q/k RMSNorm) + handoff — Status: IN PROGRESS (`scripts/test.sh T-031` 3/3; 0.6B: 64/64 greedy tokens identical after handoff, KL 4.5e-3 medium; next: 8B)
 - T-030 — Adaptive draft length in our speculative loop — Status: DONE (`scripts/test.sh T-030`; Qwen3-8B 15.5 → ~25 tok/s; open: under-picks k on code)
 - T-026 — Pipelined speculation (draft k+1.. while target verifies k); adaptive draft length
   from measured contention — Status: TODO
