@@ -47,3 +47,36 @@ faster; below ~400 tokens slower (a +0.26 s fixed cost per call, cause not yet f
 | 1702 | NPU bf16 (earlier) | 8.1–8.6 | 5.59–5.66 s | 12.35–12.72 s |
 Packed: B's TTFT −18% vs bf16 NPU and −18% vs iGPU; A keeps 69% of its speed (bf16 NPU
 53%, iGPU prefill 20%); makespan −21% vs iGPU. Placement preset `qwen3-8b-packed`.
+
+## Short-prompt fixed cost: found and fixed (two prompt versions)
+Per-op at 64 rows (8B, GEMMs only): bf16 377 ms, packed 620 ms. The packed GEMM resolves to
+a **resident** B (`_b_resident`: its 8 k-iterations fit the memtile slots, which bf16's do
+not): B is read from DDR once per call and replayed to every 256-row unit, but under a row
+bound the cores still drain the replays of all 8 units ("past them the cores drain each
+column-block's B replay uncomputed"), a fixed cost. `k_tile=256` (16 k-iterations) makes it
+stream per unit like bf16: 64 rows 299 ms, 1494 rows 1770 ms (resident 1361 ms).
+`pack_b` output is identical for k_tile 256 and 512, so both GEMMs read one packed copy.
+`Qwen3Packed.load_versions` compiles two prompt-chunk versions into one arena (shared
+weights, packed states, KV cache): `short` (profile `qwen3-streamed`) for calls of up to 640
+rows, `long` (resident) above; `IronLmExecutor.eval` picks per call.
+
+Warm 8B prefill (s):
+| tokens | 64 | 128 | 256 | 384 | 512 | 768 | 1024 | 1493 | 2000 |
+|---|---|---|---|---|---|---|---|---|---|
+| bf16 | 0.599 | 0.623 | 0.697 | 1.166 | 1.263 | 1.813 | 2.663 | 3.939 | 4.810 |
+| packed, resident only | 0.863 | 0.889 | 0.950 | 1.194 | 1.255 | 1.569 | 1.907 | 2.623 | 3.486 |
+| **packed, two versions** | **0.525** | **0.545** | **0.607** | **0.990** | **1.046** | 1.572 | 1.908 | 2.615 | 3.476 |
+Accuracy: 0.6B short (345 tok) as before; long (1445 tok, `long` version) KL 3.59e-3, greedy
+identical up to 20 (unpacked: KL 5.25e-3, also 20).
+
+Two requests (8B, A alone 16 tok/s), B TTFT / A during B's prefill:
+| B tokens | iGPU | NPU packed, two versions |
+|---|---|---|
+| 67 | 0.60–0.72 s / 10.0–11.1 | 0.96 s / 11.4–11.5 |
+| 382 | 1.70–1.94 s / 5.9–7.2 | **1.57–1.63 s / 10.2–10.5** |
+| 1702 | 5.44–5.82 s / 2.8–3.6 | **4.50–4.78 s / 10.4–10.7** (makespan 11.3 vs 14.3 s) |
+
+Placement: preset `qwen3-8b-packed` got the short version's curve (0.100 s + 0.459 s/256
+rows up to 640 rows); the decode-loss term now excludes the fixed waits (A decodes at full
+speed while an iGPU prefill queues behind its steps), which had sent a 67-token prompt to the
+NPU. Decisions now: iGPU at 64 tokens, NPU from ~200 tokens (8B), from ~1000 (3B).

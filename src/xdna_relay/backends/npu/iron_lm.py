@@ -94,6 +94,8 @@ class IronLmExecutor(Executor):
             raise NotImplementedError("IRON prompt graph returns the last row only")
         if not tokens:
             raise ValueError("eval of no tokens")
+        if hasattr(self.model, "use_prompt_version") and len(tokens) > 1:
+            self.last_prompt_version = self.model.use_prompt_version(len(tokens))
         logits = self.session.logits(self.held + list(tokens))
         self.held += [int(t) for t in tokens]
         self.n_past = len(self.held)

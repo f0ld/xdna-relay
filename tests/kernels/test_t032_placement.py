@@ -103,13 +103,22 @@ def test_npu_model_matches_warm_curve():
         assert c.npu_alone_s(n) == pytest.approx(t, rel=0.15), n
 
 
-@pytest.mark.parametrize("n,npu", [(67, 1.34), (382, 1.925), (1702, 4.63)])
+@pytest.mark.parametrize("n,npu", [(67, 0.96), (382, 1.60), (1702, 4.64)])
 def test_packed_preset_reproduces_measurements(n, npu):
     p = PlacementPolicy(costs_for("qwen3-8b-packed"))
     assert p.estimate("npu", n, active=1).ttft_s == pytest.approx(npu, rel=0.15)
 
 
 def test_packed_8b_long_prompt_goes_to_npu_short_to_igpu():
+    """Measured: 1702 and 382 tokens are better on the NPU (B TTFT 4.5-4.8 vs 5.4-5.8 s,
+    1.57-1.63 vs 1.70-1.94 s); 67 on the iGPU (0.60-0.72 vs 0.96 s)."""
     p = PlacementPolicy(costs_for("qwen3-8b-packed"))
     assert p.choose(1702, active=1).device in ("npu", "split")
+    assert p.choose(382, active=1).device in ("npu", "split")
     assert p.choose(67, active=1).device == "igpu"
+
+
+def test_short_version_used_up_to_its_rows():
+    c = costs_for("qwen3-8b-packed")
+    assert c.npu_alone_s(640) == pytest.approx(0.100 + 0.459 * 3)
+    assert c.npu_alone_s(641) == pytest.approx(0.510 + 0.362 * 3)

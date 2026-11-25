@@ -58,9 +58,49 @@ class Qwen3(CausalLM):
 
 class Qwen3Packed(Qwen3):
     """Qwen3 with packed bfp16 prompt-chunk projections; call ``packed.fill_packed`` after
-    ``load_versions`` (``IronLmExecutor(packed=True)`` does)."""
+    ``load_versions`` (``IronLmExecutor(packed=True)`` does).
+
+    Two prompt-chunk versions share the arena (weights, packed states, KV cache): ``long``
+    keeps each GEMM's packed B resident in the memtiles (read from DDR once per call, but the
+    cores drain the replays of all 8 units even under a short row bound: ~0.25 s fixed on 8B),
+    ``short`` streams it per 256-row unit (``k_tile=256``, profile ``qwen3-streamed``). The
+    packed layout is the same for both (``pack_b`` does not depend on ``k_tile``).
+    ``use_prompt_version(n)`` picks one per call (bench/results/2026-11-25-packed-gemm.md).
+    """
 
     layer_class = Qwen3PackedLayer
+    streamed_profile = Path(__file__).with_name("profiles") / "qwen3-streamed"
+    short_max_rows = 640  # measured crossover (8B GEMMs: 2.5 units)
+
+    def load_versions(self, *, release=None, full_elf=None, dev=None):
+        from iron.common.image.packaging import require_device
+
+        dev = dev or require_device()
+        decode_shapes, prompt_shapes = self.shapes()
+        decode = self.compile(dev=dev, full_elf=full_elf, **decode_shapes)
+        feeds = decode if decode.emit is not None else None
+        long = self.compile(dev=dev, feeds=feeds, full_elf=full_elf, **prompt_shapes)
+        own = self.profile
+        self.profile = self.streamed_profile
+        try:
+            short = self.compile(dev=dev, feeds=feeds, full_elf=full_elf, **prompt_shapes)
+        finally:
+            self.profile = own
+        try:
+            for version in (decode, long, short):
+                version.load(release=release)
+            self.loaded([decode, long])
+        except BaseException:
+            self.release()
+            raise
+        self.prompt_versions = {"long": long, "short": short}
+        return self
+
+    def use_prompt_version(self, new_rows: int) -> str:
+        """Select the prompt-chunk version for a call evaluating ``new_rows`` tokens."""
+        which = "short" if new_rows <= self.short_max_rows else "long"
+        self.prompt_chunk = self.prompt_versions[which]
+        return which
 
 
 if __name__ == "__main__":

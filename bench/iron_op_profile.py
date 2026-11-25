@@ -28,11 +28,23 @@ def main():
     ap.add_argument("--rounds", type=int, default=4)
     ap.add_argument("--calls", type=int, default=10)
     ap.add_argument("--precision", choices=["highest", "high", "medium"], help="override the model's")
+    ap.add_argument("--packed", action="store_true", help="T-033 packed bfp16 projections")
     ap.add_argument("--chunk", type=int, help="prefill_chunk override (rows per prompt-graph call)")
     ap.add_argument("--only", help="time only operators whose class name starts with this")
     a = ap.parse_args()
     from xdna_relay.backends.npu.iron_lm import model_for
-    cls = model_for(a.hf)
+    cls = model_for(a.hf, packed=a.packed)
+    import numpy as np
+    import iron.tune.measure as M
+    _orig = M._sample
+
+    def _sample(dtype, nbytes, rng):  # bfp16 blocks: random bytes (timing only)
+        try:
+            np.dtype(dtype)
+        except TypeError:
+            return rng.integers(0, 255, nbytes, dtype=np.uint8)
+        return _orig(dtype, nbytes, rng)
+    M._sample = _sample
 
     import dataclasses
     weights = weights_file(a.hf)

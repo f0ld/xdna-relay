@@ -63,7 +63,8 @@ def main():
     # NPU prefill + handoff
     npu.reset()
     t = time.perf_counter(); npu.eval(prompt[:-1]); t_npu_prefill = time.perf_counter() - t
-    t = time.perf_counter(); npu.eval(prompt[:-1]); t_npu_warm = time.perf_counter() - t  # held: no-op
+    npu.truncate(0)  # again, warm
+    t = time.perf_counter(); npu.eval(prompt[:-1]); t_npu_warm = time.perf_counter() - t
     ks, vs = npu.export_kv(n)
     rk, rv = ls.to_kv(ref_state)
     def rel(x, y):
@@ -79,11 +80,13 @@ def main():
     gpu.truncate(n)
     ho_tokens = greedy_from_held(gpu, prompt[-1], a.gen)
     same = next((i for i, (x, y) in enumerate(zip(ref_tokens, ho_tokens)) if x != y), len(ref_tokens))
+    print("NPU prompt version:", getattr(npu, "last_prompt_version", "-"))
     print(f"first token: ref {int(np.argmax(ref_logits))} handoff {int(np.argmax(ho_logits))}; KL {kl(ref_logits, ho_logits):.2e}")
     print(f"greedy {a.gen} tokens identical up to {same}")
     print("ref:", repr(gpu.detokenize(ref_tokens)[:160]))
     print("ho :", repr(gpu.detokenize(ho_tokens)[:160]))
-    print(f"timing: iGPU prefill {1e3 * t_gpu_prefill:.0f} ms | NPU prefill {1e3 * t_npu_prefill:.0f} ms, "
+    print(f"timing: iGPU prefill {1e3 * t_gpu_prefill:.0f} ms | NPU prefill {1e3 * t_npu_prefill:.0f} ms "
+          f"(warm {1e3 * t_npu_warm:.0f} ms), "
           f"export {1e3 * info.t_export:.0f} ms, convert {1e3 * info.t_convert:.0f} ms, import {1e3 * info.t_import:.0f} ms "
           f"({info.nbytes / 2**20:.1f} MiB)")
 

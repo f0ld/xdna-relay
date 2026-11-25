@@ -39,9 +39,17 @@ class DeviceCosts:
     npu_block: int = 256
     igpu_wait_s: float = 0.0  # fixed extra per iGPU prefill while others decode
     npu_wait_s: float = 0.0  # fixed extra per NPU prefill while others decode (incl. handoff)
+    # a second NPU prompt version for calls of at most npu_short_rows (0: none), e.g. packed
+    # Qwen3's streamed-B version (models/qwen3.py Qwen3Packed)
+    npu_short_rows: int = 0
+    npu_short_fixed_s: float = 0.0
+    npu_short_block_s: float = 0.0
 
     def npu_alone_s(self, n: int) -> float:
-        return self.npu_fixed_s + self.npu_block_s * math.ceil(n / self.npu_block)
+        blocks = math.ceil(n / self.npu_block)
+        if n <= self.npu_short_rows:
+            return self.npu_short_fixed_s + self.npu_short_block_s * blocks
+        return self.npu_fixed_s + self.npu_block_s * blocks
 
     def igpu_alone_s(self, n: int) -> float:
         return n / self.igpu_prefill_tps
@@ -70,13 +78,15 @@ _PRESETS: dict[str, DeviceCosts] = {
         igpu_slow=1.259, npu_slow=1.229, keep_igpu=3.2 / 15.8, keep_npu=8.4 / 15.8,
         igpu_wait_s=0.527, npu_wait_s=0.251,
         source="bench/results/2026-11-25-placement.md"),
-    # Qwen3-8B with packed bfp16 projections (T-033): NPU alone 0.510 s + 0.362 s/256 rows;
-    # B TTFT under A, 67/382/1702 tokens: NPU 1.32-1.36 / 1.90-1.95 / 4.63 s (fit 1%); iGPU
-    # side as "qwen3-8b". A during the NPU's 1702-token prefill 10.4 tok/s (alone ~15).
+    # Qwen3-8B with packed bfp16 projections (T-033), two prompt versions: up to 640 rows
+    # streamed B (0.100 s + 0.459 s/256 rows), above resident B (0.510 s + 0.362 s/256 rows).
+    # B TTFT under A, 67/382/1702 tokens: NPU 0.96 / 1.57-1.63 / 4.50-4.78 s (fit 2%); iGPU
+    # side as "qwen3-8b". A during the NPU's 1702-token prefill 10.4-10.7 tok/s (alone 16).
     "qwen3-8b-packed": DeviceCosts(
         igpu_prefill_tps=404.0, npu_fixed_s=0.510, npu_block_s=0.362, handoff_row_s=250e-3 / 1702,
-        igpu_slow=1.259, npu_slow=1.507, keep_igpu=3.2 / 15.8, keep_npu=10.4 / 15.0,
-        igpu_wait_s=0.527, npu_wait_s=0.043,
+        igpu_slow=1.259, npu_slow=1.487, keep_igpu=3.2 / 15.8, keep_npu=10.5 / 16.0,
+        igpu_wait_s=0.527, npu_wait_s=0.110,
+        npu_short_rows=640, npu_short_fixed_s=0.100, npu_short_block_s=0.459,
         source="bench/results/2026-11-25-packed-gemm.md"),
 }
 
@@ -121,22 +131,27 @@ class PlacementPolicy:
         ``active`` requests decode on the iGPU; ``npu_busy_s``: until the NPU is free.
         ``split``: the NPU prefills the first ``npu_tokens``, the iGPU the rest."""
         c = self.costs
-        lost = 0.0
+        # Decoders lose speed only while a prefill computes: not during the fixed waits
+        # (the iGPU prefill queued behind their decode steps; the handoff), nor while a
+        # request waits for the NPU.
         if device == "igpu":
             t = self._igpu_s(n, active)
-            lost = active * t * (1.0 - c.keep_igpu)
+            work = c.igpu_alone_s(n) * (c.igpu_slow if active else 1.0)
+            lost = active * work * (1.0 - c.keep_igpu)
             k = 0
         elif device in ("npu", "split"):
             k = n if device == "npu" else (npu_tokens if npu_tokens is not None
                                             else n // c.npu_block * c.npu_block)
             if active:
-                run = c.npu_alone_s(k) * c.npu_slow + c.npu_wait_s
+                npu_work = c.npu_alone_s(k) * c.npu_slow
+                run = npu_work + c.npu_wait_s
             else:
+                npu_work = 0.0
                 run = c.npu_alone_s(k) + k * c.handoff_row_s
             tail = self._igpu_s(n - k, active)
+            tail_work = c.igpu_alone_s(n - k) * (c.igpu_slow if active else 1.0)
             t = npu_busy_s + run + tail
-            # decoders slow only while a prefill runs (not while it waits for the NPU)
-            lost = active * (run * (1.0 - c.keep_npu) + tail * (1.0 - c.keep_igpu))
+            lost = active * (npu_work * (1.0 - c.keep_npu) + tail_work * (1.0 - c.keep_igpu))
         else:
             raise ValueError(device)
         return Choice(device, t, lost, t + self.decode_weight * lost, npu_tokens=k)
@@ -172,9 +187,13 @@ class PlacementPolicy:
             c.igpu_prefill_tps = (1 - a) * c.igpu_prefill_tps + a * (n / alone)
         else:
             alone = (seconds - c.npu_wait_s) / c.npu_slow if active else seconds
-            # scale both NPU terms by the observed/predicted ratio (keeps the fitted shape)
+            # scale the NPU terms of the version that ran by the observed/predicted ratio
             r = alone / c.npu_alone_s(n)
             f = (1 - a) + a * r
-            c.npu_fixed_s *= f
-            c.npu_block_s *= f
+            if n <= c.npu_short_rows:
+                c.npu_short_fixed_s *= f
+                c.npu_short_block_s *= f
+            else:
+                c.npu_fixed_s *= f
+                c.npu_block_s *= f
         self.log.append((device, n, seconds, active))
