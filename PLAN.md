@@ -6,7 +6,7 @@ Status values: `TODO`, `IN PROGRESS`, `REVIEW`, `DONE`, `BLOCKED` (see PROTOCOL.
 
 - Since 2026-11-24 the Architect implements directly (Implementer paused, ADR 0006). Tasks
   keep a done-command and tests; review files are written only for larger milestones.
-- Active task: next — keep_iGPU from decoders' token timestamps (step times miss GIL/request-handling stalls); Python request handling off the stepper's GIL
+- Active task: next — open: persist calibration across restarts; Llama 3B / other pairs via calibration; long-run drift (thermal, AC/battery)
 - Power: the machine runs platform profile `low-power` (fan noise); NPU may run FLM
   `--pmode performance`. Every bench row records the profile.
 - Operator TODOs: see `docs/knowledge/environment.md` → "Operator TODOs" (driver timeout).
@@ -48,6 +48,7 @@ Own pieces, each an A/B against the IRON graph it replaces (Operator, 2026-11-24
 ## MS — Speculative decoding across devices
 
 - T-025 — Draft on NPU, verify on iGPU — Status: DONE (negative, ADR 0007: ~0–10% at best; FLM unusable as draft)
+- T-039 — Calibration fixes from hardware runs 3–8 (loss per device/size from request windows, bounded exploration, per-bin corrections, split's own loss) — Status: DONE (`scripts/test.sh T-038` 14/14; from a wrong prior every size converges to the measured-best placement within ~20 requests, estimates ±13%)
 - T-038 — Online calibration of the placement cost model (`sched/online.py`: per-part ridge/forgetting line fits seeded by the preset; decode keep from stepper step times; server default, `--no-calibrate`, `GET /x_relay/calibration`) — Status: DONE (`scripts/test.sh T-038` 8/8; hardware: from a wrong prior (Llama 3B preset on Qwen3-8B) estimates within ±11% for ≥279 tokens after ~12 requests, decisions match the measured best except a near-tie at 398 tokens; bench/results/2026-11-25-calibration.md)
 - T-037 — Placement presets recalibrated for the batched engine (`qwen3-8b-packed-batched`, auto-selected) — Status: DONE (`scripts/test.sh T-032` 29/29; fits within 4%; split validated at 282 tokens: lowest TTFT + A loss, A done first)
 - T-036 — Mixed batches: iGPU prefill chunks ride along with decode tokens (stepper does all shared-context work) — Status: DONE (`scripts/test.sh T-034/T-035` pass; chunk 64–512 only trades A's speed during prefill vs B's TTFT, totals get worse below 256; default 256)

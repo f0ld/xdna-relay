@@ -37,3 +37,26 @@ keep_iGPU: from step times 0.29, from the client 2.2/15.5 = 0.14. The step-time 
 misses what A loses outside the stepper's steps (B's request handling in Python: template,
 tokenize, prepare, all under the GIL with the stepper). Open: measure keep from decoders'
 token timestamps instead of step times.
+
+## T-039: closing the remaining misses (runs 3–8, same wrong prior, 32–40 rounds each, on AC)
+Each run exposed one modelling error; each fix has a T-038 test (14 tests now):
+| run | what it showed | fix |
+|---|---|---|
+| 3 | per-step keep (0.29) ≠ client's (0.14): steps with 1-token tails counted as "prefill" | keep from whole request windows (arrival → first token), per placement |
+| 4 | one keep fraction cannot fit: iGPU keep 0.31–0.46 at 82–139 tok, 0.13–0.19 at 398–1327; client gap was my script's A-alone (15.5 vs 14.7 tok/s) | others' **lost decode-seconds** fitted per device and size; windows start at HTTP arrival |
+| 5 | NPU at 2 blocks never tried (pessimistic extrapolation, 1.71 vs ~1.35 s) | bounded exploration: options within 20% never observed at a size are tried (≤2×) |
+| 6 | NPU option charged its 1-token tail's loss twice (window already covers it); then short prompts went to the NPU: the iGPU line (intercept 0.44 s) misfits 83 tokens (0.41 s) | no double count; split adds only the tail beyond one token |
+| 7 | batched iGPU cost is not linear at the short end | per-bin residual corrections on every fit (128-token / one-block bins) |
+| 8 | split's loss composed (0.42 s at 398) vs measured 0.81 s: its tail is a real prefill chunk | split's own loss fit from its windows |
+
+## Run 8 (final calibrator), rounds 16–39 (converged; exploration stopped after round 20)
+| B tokens | choice | est vs measured TTFT | A tok/s during | measured best |
+|---|---|---|---|---|
+| 83 / 139 | iGPU | −13 … +3% | 3.2–7.1 | iGPU ✓ |
+| 279 | split 256+23 | −11 … −1% | 9.2–10.6 | split ✓ |
+| 398 | NPU | +9 … +12% | 9.8 | NPU ✓ |
+| 968 | NPU | +2 … +4% | 10.4–10.6 | NPU ✓ |
+| 1328 | split 1280+48 | −5 … −4% | 9.7–9.8 | split ✓ (TTFT+loss 4.83 vs NPU 4.94) |
+| 1718 | NPU | +3 … +5% | 10.3–10.5 | NPU ✓ |
+Round 39 (279 tokens, 1.84 s TTFT) is an unexplained outlier. Starting from a preset for another
+model, the server reaches the measured-best placement at every size within ~20 requests.
