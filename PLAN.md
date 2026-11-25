@@ -6,10 +6,24 @@ Status values: `TODO`, `IN PROGRESS`, `REVIEW`, `DONE`, `BLOCKED` (see PROTOCOL.
 
 - Since 2026-11-24 the Architect implements directly (Implementer paused, ADR 0006). Tasks
   keep a done-command and tests; review files are written only for larger milestones.
-- Active task: next — open: persist calibration across restarts; Llama 3B / other pairs via calibration; long-run drift (thermal, AC/battery)
+- Main target since 2026-11-25: Qwen3.6-35B-A3B (ADR 0008), milestone MQ below. The Qwen3-8B
+  path is paused with a resume guide: `docs/knowledge/qwen3-8b-path.md`.
+- Active task: T-042
 - Power: the machine runs platform profile `low-power` (fan noise); NPU may run FLM
   `--pmode performance`. Every bench row records the profile.
 - Operator TODOs: see `docs/knowledge/environment.md` → "Operator TODOs" (driver timeout).
+
+## MQ — Qwen3.6-35B-A3B as fast as possible (ADR 0008)
+
+Baseline (2026-11-25-moe-35b-a3b.md): iGPU decode 20.9 tok/s, prefill 471 tok/s, MTP
+(llama-server) 31.9 tok/s on code / 19.8 on prose.
+- T-042 — Hybrid-state rollback: recurrent (linear-attention) state checkpoints in the shim;
+  executor capability used by speculative verify and the prefix cache — Status: IN PROGRESS
+- T-043 — MTP drafting through the shim (llama.cpp draft-mtp) under BatchK; batched — Status: TODO
+- T-044 — Engine/server on the 35B-A3B (batched, prefix cache with checkpoints, calibration) — Status: TODO
+- T-045 — IRON path: op inventory of qwen35moe (gated linear attention, MoE experts, full
+  attention layers), what IRON has, what needs kernels; plan of the graph — Status: TODO
+- T-046.. — IRON graph pieces, handoff of KV + recurrent state, placement — Status: TODO
 
 ## Done (foundation)
 
