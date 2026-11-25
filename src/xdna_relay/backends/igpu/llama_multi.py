@@ -36,6 +36,8 @@ def _bind(lib) -> None:
         "rl_load_multi": (P, [C.c_char_p, I, I, I, I, I, I, I]),
         "rl_eval_seq": (I, [P, I, IP, I, I, I]),
         "rl_decode_multi": (I, [P, I, IP, IP, IP]),
+        "rl_decode_batch": (I, [P, I, IP, IP, IP, IP]),
+        "rl_argmax_at": (I, [P, I, IP, IP, FP]),
         "rl_seq_truncate": (I, [P, I, I]),
         "rl_seq_pos_max": (I, [P, I]),
         "rl_state_seq_size": (C.c_size_t, [P, I]),
@@ -111,6 +113,47 @@ class SharedLlamaContext:
             s.held.append(int(t))
             s._last_decode = -1  # its rows were part of a batch: logits() not available
         return rows
+
+    def step(self, parts: list[tuple["LlamaSeqExecutor", list[int], bool]]) -> list[tuple[int, float] | None]:
+        """One mixed batch: per part, append ``tokens`` to the sequence (a decode token, or a
+        prefill chunk), with logits for the part's last token if its flag is set. Returns per
+        part (next greedy token, top1-top2 gap) or None. At most one part per sequence."""
+        if len({p[0].seq for p in parts}) != len(parts):
+            raise ValueError("a sequence twice in one step")
+        n = sum(len(t) for _, t, _ in parts)
+        if n == 0 or n > self.n_batch:
+            raise ValueError(f"step of {n} tokens (n_batch {self.n_batch})")
+        toks, pos, ids, want, out_idx = [], [], [], [], []
+        for s, t, logits in parts:
+            if s.n_past + len(t) > s.n_ctx:
+                raise ValueError(f"seq {s.seq}: {s.n_past}+{len(t)} tokens exceed its n_ctx {s.n_ctx}")
+            for j, tok in enumerate(t):
+                toks.append(int(tok)); pos.append(s.n_past + j); ids.append(s.seq)
+                last = j == len(t) - 1 and logits
+                want.append(1 if last else 0)
+                if last:
+                    out_idx.append(len(toks) - 1)
+        A = C.c_int * n
+        idx = (C.c_int * max(1, len(out_idx)))(*out_idx)
+        with self.lock:
+            rc = self._l.rl_decode_batch(self._h, n, A(*toks), A(*pos), A(*ids), A(*want))
+            if rc < 0 or rc != len(out_idx):
+                raise RuntimeError(f"llama_decode (mixed batch) failed: {rc}")
+            self.decodes += 1
+            if out_idx:
+                self._l.rl_argmax_at(self._h, len(out_idx), idx, self._tok, self._gap)
+                rows = self._rows(len(out_idx))
+        res, k = [], 0
+        for s, t, logits in parts:
+            s.n_past += len(t)
+            s.held.extend(int(x) for x in t)
+            s._last_decode = -1
+            if logits:
+                res.append((int(rows.tokens[k]), float(rows.gaps[k])))
+                k += 1
+            else:
+                res.append(None)
+        return res
 
     # shared vocabulary helpers
     def tokenize(self, text: str, add_special: bool = True) -> list[int]:

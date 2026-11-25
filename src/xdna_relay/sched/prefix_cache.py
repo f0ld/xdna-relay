@@ -90,11 +90,10 @@ class PrefixCache:
             self.bytes -= ev.nbytes
 
 
-def prefill(ex: Executor, prompt: list[int], cache: PrefixCache | None = None, store: bool = True):
-    """Make ``ex`` hold ``prompt`` and return (last-row readout, PrefillInfo).
-
-    At least the last prompt token is always evaluated (its logits start generation).
-    """
+def prepare(ex: Executor, prompt: list[int], cache: PrefixCache | None = None) -> tuple[int, PrefillInfo]:
+    """Make ``ex`` hold the longest reusable prefix of ``prompt`` (its live sequence or a
+    snapshot), at most ``len(prompt) - 1`` tokens. Returns (tokens held, PrefillInfo); the
+    caller evaluates ``prompt[n:]``."""
     info = PrefillInfo()
     limit = len(prompt) - 1
     live = min(common_prefix(ex.held, prompt), limit)
@@ -117,8 +116,16 @@ def prefill(ex: Executor, prompt: list[int], cache: PrefixCache | None = None, s
         ex.reset()
         info.reused_cache = info.reused_live = 0
     info.t_restore = time.perf_counter() - t
+    return ex.n_past, info
+
+
+def prefill(ex: Executor, prompt: list[int], cache: PrefixCache | None = None, store: bool = True):
+    """Make ``ex`` hold ``prompt`` and return (last-row readout, PrefillInfo).
+
+    At least the last prompt token is always evaluated (its logits start generation).
+    """
+    n0, info = prepare(ex, prompt, cache)
     t = time.perf_counter()
-    n0 = ex.n_past
     rows = ex.eval(prompt[n0:])
     info.evaluated = len(prompt) - n0
     info.t_eval = time.perf_counter() - t

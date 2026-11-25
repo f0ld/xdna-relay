@@ -29,18 +29,20 @@ import time
 from dataclasses import dataclass, field
 
 from xdna_relay.sched.placement import PlacementPolicy
-from xdna_relay.sched.prefix_cache import PrefixCache, common_prefix, prefill
+from xdna_relay.sched.prefix_cache import PrefixCache, common_prefix, prepare
 from xdna_relay.sched.speculative import GenStats, generate
 
 
 @dataclass
 class _Decoding:
-    """A request in the stepper's batch."""
+    """A request in the stepper's hands: prefilling (``pending`` tokens left), then decoding."""
     slot: "Slot"
-    last: int
+    last: int | None
     remaining: int
     out: queue.Queue
+    pending: list = field(default_factory=list)
     cancel: bool = False
+    t_first: float = 0.0
 
 
 @dataclass
@@ -71,7 +73,8 @@ class Engine:
     def __init__(self, gguf: str, *, slots: int = 2, n_ctx: int = 8192, draft_gguf: str | None = None,
                  hf_dir: str | None = None, npu: bool = False, packed: bool = False,
                  npu_max_seq_len: int = 2048, policy: PlacementPolicy | None = None,
-                 placement: str = "auto", cache_bytes: int = 4 << 30, batched: bool | None = None):
+                 placement: str = "auto", cache_bytes: int = 4 << 30, batched: bool | None = None,
+                 prefill_chunk: int = 256):
         from xdna_relay.backends.igpu.llama import LlamaCppExecutor
 
         if placement not in ("auto", "igpu", "npu"):
@@ -113,6 +116,7 @@ class Engine:
         self._npu_lock = threading.Lock()
         self._npu_free_at = 0.0
         self.requests = 0
+        self.prefill_chunk = prefill_chunk  # prompt tokens per mixed step (batched mode)
         self.steps = 0  # batched decode steps
         self.step_rows = 0  # sequences advanced, summed over steps
         self._decoding: list[_Decoding] = []
@@ -210,40 +214,43 @@ class Engine:
         self._finish_prefill_stats(res, st.prefill, choice, active)
 
     def _complete_batched(self, slot, prompt, max_tokens, on_token, res, t0, active, choice):
-        """Batched: prefill this sequence, then let the stepper decode it with the others."""
+        """Batched: restore what can be reused here, then the stepper prefills the rest in
+        chunks riding along with the other sequences' decode tokens, and decodes."""
         st = GenStats()
-        rows, st.prefill = prefill(slot.target, prompt, self.cache, store=False)
-        st.t_prefill = time.perf_counter() - t0
-        tok = int(rows.tokens[-1])
-        res.ttft_s = time.perf_counter() - t0
-        st.tokens.append(tok)
-        stop = bool(on_token(tok)) if on_token is not None else False
-        done = stop or slot.target.is_eog(tok) or max_tokens <= 1
-        if not done:
-            entry = _Decoding(slot, tok, max_tokens - 1, queue.Queue())
-            with self._cv:
-                slot.phase = "decode"
-            with self._step_cv:
-                self._decoding.append(entry)
-                self._step_cv.notify()
-            while True:
-                t = entry.out.get()
-                if t is None:
-                    break
-                if entry.cancel:  # the stepper may run one step past a stop: drop it
-                    continue
-                st.tokens.append(t)
-                if on_token is not None and on_token(t):
-                    entry.cancel = stop = True
+        n0, info = prepare(slot.target, prompt, self.cache)
+        info.evaluated = len(prompt) - n0
+        entry = _Decoding(slot, None, max_tokens, queue.Queue(), pending=list(prompt[n0:]))
+        t_sub = time.perf_counter()
+        with self._step_cv:
+            self._decoding.append(entry)
+            self._step_cv.notify()
+        stop = False
+        while True:
+            t = entry.out.get()
+            if t is None:
+                break
+            if entry.cancel:  # the stepper may run one step past a stop: drop it
+                continue
+            if not st.tokens:
+                res.ttft_s = entry.t_first - t0
+                info.t_eval = entry.t_first - t_sub
+                st.t_prefill = entry.t_first - t0
+                with self._cv:
+                    slot.phase = "decode"
+            st.tokens.append(t)
+            if on_token is not None and on_token(t):
+                entry.cancel = stop = True
+        st.prefill = info
         res.stopped = stop
         st.t_total = time.perf_counter() - t0
         res.stats, res.tokens = st, list(st.tokens)
         res.total_s = st.t_total
         self.cache.put(slot.target.snapshot())
-        self._finish_prefill_stats(res, st.prefill, choice, active)
+        self._finish_prefill_stats(res, info, choice, active)
 
     def _stepper(self) -> None:
-        """Decode every registered sequence by one token per step, in one batch."""
+        """Each step, one llama_decode: every decoding sequence's next token, plus the next
+        chunk (``prefill_chunk`` tokens) of the oldest request still prefilling."""
         while True:
             with self._step_cv:
                 while not self._decoding and not self._closing:
@@ -252,29 +259,47 @@ class Engine:
                     for e in self._decoding:
                         e.out.put(None)
                     return
-                batch = list(self._decoding)
-            try:
-                rows = self.shared.decode_step([e.slot.target for e in batch], [e.last for e in batch])
-            except Exception:
-                with self._step_cv:
-                    for e in batch:
-                        self._decoding.remove(e)
-                        e.out.put(None)
-                raise
-            self.steps += 1
-            self.step_rows += len(batch)
-            finished = []
-            for e, t in zip(batch, rows.tokens):
-                t = int(t)
-                e.last = t
-                e.remaining -= 1
-                e.out.put(t)
-                if e.cancel or e.remaining <= 0 or e.slot.target.is_eog(t):
-                    finished.append(e)
+                entries = list(self._decoding)
+            dec = [e for e in entries if not e.pending and not e.cancel]
+            pre = [e for e in entries if e.pending and not e.cancel]
+            parts, owners = [(e.slot.target, [e.last], True) for e in dec], list(dec)
+            if pre:
+                job = pre[0]
+                budget = min(self.prefill_chunk, self.shared.n_batch - len(dec))
+                chunk = job.pending[:budget]
+                parts.append((job.slot.target, chunk, len(chunk) == len(job.pending)))
+                owners.append(job)
+            finished = [e for e in entries if e.cancel]
+            if parts:
+                try:
+                    out = self.shared.step(parts)
+                except Exception:
+                    with self._step_cv:
+                        for e in entries:
+                            if e in self._decoding:
+                                self._decoding.remove(e)
+                            e.out.put(None)
+                    raise
+                self.steps += 1
+                self.step_rows += len(dec)
+                now = time.perf_counter()
+                for e, (_, toks, _), r in zip(owners, parts, out):
+                    if e.pending:  # the prefill chunk
+                        del e.pending[:len(toks)]
+                        if e.pending:
+                            continue
+                        e.t_first = now
+                    t = r[0]
+                    e.last = t
+                    e.remaining -= 1
+                    e.out.put(t)
+                    if e.remaining <= 0 or e.slot.target.is_eog(t):
+                        finished.append(e)
             if finished:
                 with self._step_cv:
                     for e in finished:
-                        self._decoding.remove(e)
+                        if e in self._decoding:
+                            self._decoding.remove(e)
                         e.out.put(None)
 
     def _finish_prefill_stats(self, res, info, choice, active) -> None:

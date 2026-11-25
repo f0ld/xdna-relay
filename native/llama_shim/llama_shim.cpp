@@ -166,6 +166,54 @@ int rl_decode_multi(void * p, int n, const int * toks, const int * pos, const in
     return rc;
 }
 
+// A mixed batch: entry i is token toks[i] at position pos[i] of sequence seqs[i], with
+// logits where want[i] != 0 (several entries may belong to one sequence: a prefill chunk;
+// decode tokens of other sequences ride along). n <= n_batch. Read rows with rl_argmax_at /
+// rl_logits_at by batch index.
+int rl_decode_batch(void * p, int n, const int * toks, const int * pos, const int * seqs, const int * want) {
+    auto * h = static_cast<Handle *>(p);
+    if (n <= 0 || n > h->n_batch) {
+        return -100;
+    }
+    llama_batch & b = h->batch;
+    b.n_tokens = n;
+    int n_out = 0;
+    for (int i = 0; i < n; ++i) {
+        b.token[i]     = toks[i];
+        b.pos[i]       = pos[i];
+        b.n_seq_id[i]  = 1;
+        b.seq_id[i][0] = seqs[i];
+        b.logits[i]    = want[i] != 0;
+        n_out += want[i] != 0;
+    }
+    const int rc = llama_decode(h->ctx, b);
+    h->n_out = 0;  // rows are read by batch index, not as a contiguous run
+    return rc == 0 ? n_out : rc;
+}
+
+// Greedy readout of batch indices idx[0..n): argmax and top1-top2 gap each.
+int rl_argmax_at(void * p, int n, const int * idx, int * toks, float * gaps) {
+    auto * h = static_cast<Handle *>(p);
+    for (int r = 0; r < n; ++r) {
+        const float * l = llama_get_logits_ith(h->ctx, idx[r]);
+        if (!l) {
+            return -1;
+        }
+        int   best = 0;
+        float b1 = l[0], b2 = -1e30f;
+        for (int v = 1; v < h->n_vocab; ++v) {
+            if (l[v] > b1) {
+                b2 = b1; b1 = l[v]; best = v;
+            } else if (l[v] > b2) {
+                b2 = l[v];
+            }
+        }
+        toks[r] = best;
+        gaps[r] = b1 - b2;
+    }
+    return n;
+}
+
 // Greedy readout of the last eval's rows: argmax and (top1 - top2) logit gap per row.
 int rl_argmax_rows(void * p, int * toks, float * gaps) {
     auto * h = static_cast<Handle *>(p);

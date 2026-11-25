@@ -46,3 +46,20 @@ Unbatched server, for comparison (2026-11-25-server.md, on AC): iGPU B TTFT 5.6�
 - The placement presets were fitted on the unbatched engine; on the iGPU side they now
   overestimate B's TTFT and underestimate A's loss. Same decision here; recalibrate for the
   batched engine (follow-up).
+
+## Mixed batches: iGPU prefill chunks ride along with decode tokens (T-036)
+The stepper now does all work on the shared context: each `llama_decode` carries every
+decoding sequence's next token plus the next `--prefill-chunk` tokens of the oldest request
+still prefilling (shim `rl_decode_batch` / `rl_argmax_at`; request threads only restore from
+the prefix cache / NPU handoff). iGPU-only server, Qwen3-8B, 2 slots, B ~1.7k tokens,
+platform `balanced`, **on battery**:
+| prefill chunk | A tok/s while B prefills | B TTFT | A done | B done |
+|---|---|---|---|---|
+| 512 (= before: one 512-token eval per lock hold) | 1.0–1.3 | 4.64–4.82 s | 17.7–18.0 s | 6.9–7.1 s |
+| **256 (default)** | 1.6 | 4.86–4.99 s | 17.9 s | 7.1–7.2 s |
+| 128 | 2.4–2.5 | 5.77–5.99 s | 18.3–18.4 s | 8.0–8.2 s |
+| 64 | 3.6–3.7 | 7.55–7.61 s | 19.2–19.3 s | 9.8–9.9 s |
+Interleaving only trades: smaller chunks share the iGPU more fairly, but each step's fixed
+cost and the smaller prefill matmuls add work, so everything ends later. 256 keeps B's TTFT
+and both totals within a few percent of 512. The way to keep A decoding is the NPU (A 10
+tok/s during B's prefill, above).

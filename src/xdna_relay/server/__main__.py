@@ -26,6 +26,8 @@ def main(argv=None):
     ap.add_argument("--no-batch", action="store_true",
                     help="one llama.cpp context per slot, unbatched decode (default with --draft)")
     ap.add_argument("--ctx", type=int, default=8192, help="context per slot")
+    ap.add_argument("--prefill-chunk", type=int, default=256,
+                    help="batched mode: prompt tokens per mixed step (smaller: decoders stall less)")
     ap.add_argument("--npu", action="store_true", help="NPU prefill worker (IRON) + KV handoff")
     ap.add_argument("--packed", action="store_true", help="NPU: packed bfp16 projections (Qwen3)")
     ap.add_argument("--npu-max-seq-len", type=int, default=2048)
@@ -49,7 +51,7 @@ def main(argv=None):
     engine = Engine(a.gguf, slots=a.slots, n_ctx=a.ctx, draft_gguf=a.draft, hf_dir=a.hf, npu=a.npu,
                     packed=a.packed, npu_max_seq_len=a.npu_max_seq_len, policy=policy,
                     placement=a.placement, cache_bytes=a.cache_mib << 20,
-                    batched=False if (a.no_batch or a.draft) else True)
+                    batched=False if (a.no_batch or a.draft) else True, prefill_chunk=a.prefill_chunk)
     name = a.name or engine.model
     httpd = serve(engine, tpl, name, a.host, a.port)
     print(f"xdna-relay serving {name} on http://{a.host}:{a.port} ({a.slots} slots, "
