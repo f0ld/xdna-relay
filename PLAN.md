@@ -6,7 +6,7 @@ Status values: `TODO`, `IN PROGRESS`, `REVIEW`, `DONE`, `BLOCKED` (see PROTOCOL.
 
 - Since 2026-11-24 the Architect implements directly (Implementer paused, ADR 0006). Tasks
   keep a done-command and tests; review files are written only for larger milestones.
-- Active task: next — T-021 prompt-cache baseline, T-022 NPU logits check
+- Active task: next — T-020 bench harness / M7 server (integrate placement + handoff + prefix cache)
 - Power: the machine runs platform profile `low-power` (fan noise); NPU may run FLM
   `--pmode performance`. Every bench row records the profile.
 - Operator TODOs: see `docs/knowledge/environment.md` → "Operator TODOs" (driver timeout).
@@ -26,7 +26,7 @@ Status values: `TODO`, `IN PROGRESS`, `REVIEW`, `DONE`, `BLOCKED` (see PROTOCOL.
   xdna2-architecture.md; absorbs old T-007). `bench/contention.py` — Status: DONE
 - T-020 — Bench harness: CSV schema, `scripts/bench.sh`, results in `bench/results/` (old T-006) — Status: TODO
 - T-021 — Baselines of existing tools: llama.cpp same-device speculative decoding (draft on
-  iGPU) and llama-server prompt cache, for the candidate model pairs; acceptance rates — Status: IN PROGRESS (spec decode done; prompt-cache baseline open)
+  iGPU) and llama-server prompt cache, for the candidate model pairs; acceptance rates — Status: DONE (spec decode: 2026-11-24-spec-igpu.md; prompt cache: llama-server's slot + RAM cache matches our T-027 TTFT, 2026-11-25-server-prompt-cache.md)
 
 ## MN — NPU executor on IRON full-model graphs
 
