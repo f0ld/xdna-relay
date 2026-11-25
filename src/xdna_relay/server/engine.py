@@ -77,7 +77,7 @@ class Engine:
                  hf_dir: str | None = None, npu: bool = False, packed: bool = False,
                  npu_max_seq_len: int = 2048, policy: PlacementPolicy | None = None,
                  placement: str = "auto", cache_bytes: int = 4 << 30, batched: bool | None = None,
-                 prefill_chunk: int = 256):
+                 prefill_chunk: int = 256, calibration_path: str | None = None):
         from xdna_relay.backends.igpu.llama import LlamaCppExecutor
 
         if placement not in ("auto", "igpu", "npu", "split"):
@@ -116,6 +116,11 @@ class Engine:
         policy.npu_max_tokens = npu_max_seq_len
         self.policy = policy
         self.placement = placement
+        self.calibration = None  # sched.calibration_store.CalibrationStore, when persisted
+        if calibration_path and policy.online is not None:
+            from xdna_relay.sched.calibration_store import CalibrationStore
+            self.calibration = CalibrationStore(policy.online, calibration_path)
+            self.calibration.load()
         self._cv = threading.Condition()
         self._npu_lock = threading.Lock()
         self._npu_free_at = 0.0
@@ -212,6 +217,8 @@ class Engine:
             return res
         finally:
             self._release(slot)
+            if self.calibration is not None:
+                self.calibration.maybe_save()
 
     def _complete_slot(self, slot, prompt, max_tokens, on_token, res, t0, active, choice):
         """Unbatched: the slot's own contexts, ``generate`` (speculative with a draft)."""
@@ -367,6 +374,11 @@ class Engine:
         return self.slots[0].target.is_eog(token)
 
     def close(self) -> None:
+        if self.calibration is not None:
+            try:
+                self.calibration.save()
+            except OSError as e:
+                print(f"calibration: could not save on close: {e}")
         with self._step_cv:
             self._closing = True
             self._step_cv.notify()

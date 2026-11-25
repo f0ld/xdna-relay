@@ -61,7 +61,10 @@ def make_handler(engine, chat_template, model_name: str):
                 return self._json(200, {"status": "ok"})
             if self.path == "/x_relay/calibration":
                 online = getattr(engine.policy, "online", None)
+                store = getattr(engine, "calibration", None)
                 return self._json(200, {"online": online is not None,
+                                        "file": str(store.path) if store else None,
+                                        "source": store.source if store else None,
                                         "fits": online.summary() if online else None,
                                         "observations": len(engine.policy.log)})
             if self.path == "/v1/models":

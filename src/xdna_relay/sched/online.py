@@ -271,3 +271,73 @@ class OnlineCosts:
             out["keep_npu"] = (self.keep_npu.n, round(self.keep_npu.value, 3))
             out["plain_step_s"] = (self._plain_step.n, round(self._plain_step.value, 4))
             return out
+
+
+# ---- persistence (T-040) -------------------------------------------------------------------
+
+STATE_VERSION = 1
+
+
+def _fit_state(f: LinFit) -> dict:
+    return {"c0": f.c0, "c1": f.c1, "tau": f.tau, "forget": f.forget, "bin_width": f.bin_width,
+            "alpha": f.alpha, "n": f.n, "s": [float(v) for v in f._s],
+            "bins": {str(k): float(v) for k, v in f._bins.items()}}
+
+
+def _fit_load(f: LinFit, d: dict) -> None:
+    f.c0, f.c1, f.tau, f.forget = d["c0"], d["c1"], d["tau"], d["forget"]
+    f.bin_width, f.alpha, f.n = d["bin_width"], d["alpha"], d["n"]
+    f._s = np.array(d["s"], dtype=float)
+    f._bins = {int(k): float(v) for k, v in d["bins"].items()}
+
+
+def _ema_state(e: Ema) -> dict:
+    return {"value": e.value, "alpha": e.alpha, "n": e.n}
+
+
+def _ema_load(e: Ema, d: dict) -> None:
+    e.value, e.alpha, e.n = d["value"], d["alpha"], d["n"]
+
+
+def to_state(o: OnlineCosts) -> dict:
+    """Everything the calibrator learned, as JSON-able data (``from_state`` restores it)."""
+    with o._lock:
+        return {
+            "version": STATE_VERSION,
+            "short_rows": o.short_rows,
+            "igpu": {f"{int(a)}{int(sm)}": _fit_state(f) for (a, sm), f in o.igpu.items()},
+            "npu": {f"{v}|{int(a)}": _fit_state(f) for (v, a), f in o.npu.items()},
+            "lost_igpu": {str(int(sm)): _fit_state(f) for sm, f in o.lost_igpu.items()},
+            "lost_npu": {v: _fit_state(f) for v, f in o.lost_npu.items()},
+            "lost_split": _fit_state(o.lost_split),
+            "keep_igpu": _ema_state(o.keep_igpu),
+            "keep_npu": _ema_state(o.keep_npu),
+            "plain_step": _ema_state(o._plain_step),
+            "seen": [[list(k), v] for k, v in o._seen.items()],
+        }
+
+
+def from_state(o: OnlineCosts, d: dict) -> None:
+    """Restore ``to_state`` data into ``o`` (built from the same prior). Raises ValueError on
+    another state version or layout, leaving ``o`` as it was."""
+    if d.get("version") != STATE_VERSION:
+        raise ValueError(f"calibration state version {d.get('version')} (expected {STATE_VERSION})")
+    keys_ok = (set(d["igpu"]) == {f"{int(a)}{int(sm)}" for a, sm in o.igpu}
+               and set(d["npu"]) == {f"{v}|{int(a)}" for v, a in o.npu}
+               and set(d["lost_npu"]) == set(o.lost_npu))
+    if not keys_ok or d.get("short_rows") != o.short_rows:
+        raise ValueError("calibration state layout differs from this model")
+    with o._lock:
+        for (a, sm), f in o.igpu.items():
+            _fit_load(f, d["igpu"][f"{int(a)}{int(sm)}"])
+        for (v, a), f in o.npu.items():
+            _fit_load(f, d["npu"][f"{v}|{int(a)}"])
+        for sm, f in o.lost_igpu.items():
+            _fit_load(f, d["lost_igpu"][str(int(sm))])
+        for v, f in o.lost_npu.items():
+            _fit_load(f, d["lost_npu"][v])
+        _fit_load(o.lost_split, d["lost_split"])
+        _ema_load(o.keep_igpu, d["keep_igpu"])
+        _ema_load(o.keep_npu, d["keep_npu"])
+        _ema_load(o._plain_step, d["plain_step"])
+        o._seen = {tuple(k): v for k, v in d["seen"]}

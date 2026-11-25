@@ -33,6 +33,10 @@ def main(argv=None):
     ap.add_argument("--npu-max-seq-len", type=int, default=2048)
     ap.add_argument("--preset", choices=presets(), help="measured placement costs for this model pair")
     ap.add_argument("--placement", default="auto", choices=["auto", "igpu", "npu", "split"])
+    ap.add_argument("--no-persist", action="store_true",
+                    help="do not load/save the online calibration (default: per-setup file)")
+    ap.add_argument("--calibration-file", help="calibration state file (default: "
+                    "~/.cache/xdna-relay/calibration/<setup key>.json)")
     ap.add_argument("--no-calibrate", action="store_true",
                     help="keep the preset fixed (default: fit it online from measured prefills)")
     ap.add_argument("--cache-mib", type=int, default=4096, help="prefix cache budget (host RAM)")
@@ -58,16 +62,27 @@ def main(argv=None):
         policy = PlacementPolicy(costs) if a.no_calibrate else PlacementPolicy.calibrating(costs)
     else:
         policy = None
+    cal_path = None
+    if not a.no_calibrate and not a.no_persist:  # with a preset, or the engine's default prior
+        from pathlib import Path
+
+        from xdna_relay.sched.calibration_store import DEFAULT_DIR, power_source, setup_key
+        key = setup_key(gguf=Path(a.gguf).stem, npu=Path(a.hf).name if (a.npu and a.hf) else None,
+                        packed=a.packed and a.npu, engine=f"batched-{a.prefill_chunk}" if batched
+                        else "slots", prior=preset or "default", power=power_source())
+        cal_path = a.calibration_file or str(DEFAULT_DIR / f"{key}.json")
     engine = Engine(a.gguf, slots=a.slots, n_ctx=a.ctx, draft_gguf=a.draft, hf_dir=a.hf, npu=a.npu,
                     packed=a.packed, npu_max_seq_len=a.npu_max_seq_len, policy=policy,
                     placement=a.placement, cache_bytes=a.cache_mib << 20,
-                    batched=batched, prefill_chunk=a.prefill_chunk)
+                    batched=batched, prefill_chunk=a.prefill_chunk, calibration_path=cal_path)
     name = a.name or engine.model
     httpd = serve(engine, tpl, name, a.host, a.port)
     print(f"xdna-relay serving {name} on http://{a.host}:{a.port} ({a.slots} slots, "
           f"{'batched' if engine.batched else 'unbatched'}"
           f"{', NPU prefill' if a.npu else ''}{', draft ' + a.draft if a.draft else ''}"
-          f"{', placement preset ' + preset if preset else ''})", flush=True)
+          f"{', placement preset ' + preset if preset else ''})"
+          + (f"\n  calibration: {engine.calibration.path} ({engine.calibration.source})"
+             if engine.calibration else ""), flush=True)
 
     def stop(*_):
         httpd.shutdown()
