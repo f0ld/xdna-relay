@@ -10,6 +10,7 @@ Two levels, used by ``prefill``:
 """
 from __future__ import annotations
 
+import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -43,24 +44,36 @@ class PrefixCache:
         self.bytes = 0
         self.hits = 0
         self.misses = 0
+        self._lock = threading.RLock()  # slots run in parallel threads (server)
 
     def __len__(self) -> int:
         return len(self._entries)
 
     def best(self, model: str, prompt: list[int]) -> tuple[Snapshot | None, int]:
         """The snapshot of ``model`` sharing the longest prefix with ``prompt``, and that length."""
-        best, best_n = None, 0
-        for (m, _), snap in self._entries.items():
-            if m != model:
-                continue
-            n = common_prefix(snap.tokens, prompt)
-            if n > best_n:
-                best, best_n = snap, n
-        if best is not None:
-            self._entries.move_to_end((model, best.tokens))
-        return best, best_n
+        with self._lock:
+            best, best_n = None, 0
+            for (m, _), snap in self._entries.items():
+                if m != model:
+                    continue
+                n = common_prefix(snap.tokens, prompt)
+                if n > best_n:
+                    best, best_n = snap, n
+            if best is not None:
+                self._entries.move_to_end((model, best.tokens))
+            return best, best_n
+
+    def peek(self, model: str, prompt: list[int]) -> int:
+        """Length of the longest cached prefix of ``prompt`` (no LRU update)."""
+        with self._lock:
+            return max((common_prefix(s.tokens, prompt) for (m, _), s in self._entries.items()
+                        if m == model), default=0)
 
     def put(self, snap: Snapshot) -> None:
+        with self._lock:
+            self._put(snap)
+
+    def _put(self, snap: Snapshot) -> None:
         key = (snap.model, snap.tokens)
         if len(snap.tokens) < self.min_tokens or snap.nbytes > self.max_bytes:
             return

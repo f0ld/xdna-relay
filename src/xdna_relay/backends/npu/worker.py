@@ -84,12 +84,14 @@ class NpuWorker:
         tag, self.name = self.conn.recv()
         assert tag == "ready"
         self.last_timing: dict[str, float] = {}
+        self.held: list[int] = []  # what the worker's executor holds (mirrors _serve's reuse)
 
     def prefill_blob(self, tokens: list[int], tpl, use) -> None:
         """Prefill ``tokens`` on the NPU; call ``use(blob)`` with the llama.cpp state blob
         (uint8 array over shared memory, valid only during the call; header from ``tpl``,
         ``llama_state.meta`` of the destination's template)."""
         self.conn.send(("prefill", (list(tokens), tpl)))
+        self.held = list(tokens)
         tag, (name, size, self.last_timing) = self.conn.recv()
         shm = shared_memory.SharedMemory(name=name)
         try:

@@ -125,12 +125,22 @@ class GenStats:
 
 
 def generate(target: Executor, prompt: list[int], max_tokens: int, draft: Executor | None = None,
-             policy: AdaptiveK | None = None, cache: PrefixCache | None = None) -> GenStats:
+             policy: AdaptiveK | None = None, cache: PrefixCache | None = None,
+             on_token=None) -> GenStats:
     """Greedy generation of up to ``max_tokens`` after ``prompt``; speculative when ``draft`` is given.
 
     Prefill reuses what the executors still hold, and ``cache`` snapshots when given
     (``prefix_cache.prefill``). Stops at an end-of-generation token (included).
+    ``on_token(token)`` is called for every generated token as it is accepted; returning True
+    stops generation there (a client went away).
     """
+    stopped = False
+
+    def emit(t: int) -> None:
+        nonlocal stopped
+        if on_token is not None and not stopped and on_token(t):
+            stopped = True
+
     policy = policy or AdaptiveK(fixed=None if draft else 0)
     st = GenStats()
     t0 = time.perf_counter()
@@ -138,6 +148,7 @@ def generate(target: Executor, prompt: list[int], max_tokens: int, draft: Execut
     rows, st.prefill = prefill(target, prompt, cache, store=False)
     seq = list(prompt) + [int(rows.tokens[-1])]
     st.tokens.append(seq[-1])
+    emit(seq[-1])
     if draft is not None:
         if len(prompt) > 1:
             _, st.prefill_draft = prefill(draft, prompt[:-1], cache, store=False)
@@ -145,7 +156,7 @@ def generate(target: Executor, prompt: list[int], max_tokens: int, draft: Execut
             draft.reset()
     st.t_prefill = time.perf_counter() - t0
 
-    while len(st.tokens) < max_tokens and not target.is_eog(seq[-1]):
+    while len(st.tokens) < max_tokens and not target.is_eog(seq[-1]) and not stopped:
         k = 0 if draft is None else policy.choose()
         k = min(k, max_tokens - len(st.tokens))  # never draft past the budget
         base = len(seq) - 1  # target holds seq[:base]
@@ -175,7 +186,8 @@ def generate(target: Executor, prompt: list[int], max_tokens: int, draft: Execut
         for t in new:  # an accepted draft may already end the generation
             seq.append(t)
             st.tokens.append(t)
-            if target.is_eog(t) or len(st.tokens) >= max_tokens:
+            emit(t)
+            if target.is_eog(t) or len(st.tokens) >= max_tokens or stopped:
                 done = True
                 break
         st.rounds += 1
