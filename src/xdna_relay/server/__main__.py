@@ -23,6 +23,8 @@ def main(argv=None):
     ap.add_argument("--chat-template", help="a Jinja chat template file (default: from --hf)")
     ap.add_argument("--draft", help="draft GGUF for speculative decoding (batched: one shared draft context)")
     ap.add_argument("--slots", type=int, default=2)
+    ap.add_argument("--mtp", action="store_true",
+                    help="speculative decoding with the model's own MTP head (GGUF with nextn layers)")
     ap.add_argument("--no-batch", action="store_true",
                     help="one llama.cpp context per slot, unbatched decode")
     ap.add_argument("--ctx", type=int, default=8192, help="context per slot")
@@ -54,7 +56,7 @@ def main(argv=None):
     elif a.hf:
         tpl = ChatTemplate.from_hf_dir(a.hf, defaults=defaults)
     else:
-        ap.error("a chat template: --hf or --chat-template")
+        tpl = None  # the GGUF's own (tokenizer.chat_template), once the engine has loaded it
     batched = not a.no_batch
     preset = a.preset
     if preset and batched and f"{preset}-batched" in presets():
@@ -70,13 +72,19 @@ def main(argv=None):
 
         from xdna_relay.sched.calibration_store import DEFAULT_DIR, power_source, setup_key
         key = setup_key(gguf=Path(a.gguf).stem, npu=Path(a.hf).name if (a.npu and a.hf) else None,
-                        packed=a.packed and a.npu, engine=(f"batched-{a.prefill_chunk}" + ("-spec" if a.draft else "")) if batched
+                        packed=a.packed and a.npu, engine=(f"batched-{a.prefill_chunk}" + ("-spec" if a.draft else "") + ("-mtp" if a.mtp else "")) if batched
                         else "slots", prior=preset or "default", power=power_source())
         cal_path = a.calibration_file or str(DEFAULT_DIR / f"{key}.json")
     engine = Engine(a.gguf, slots=a.slots, n_ctx=a.ctx, draft_gguf=a.draft, hf_dir=a.hf, npu=a.npu,
                     packed=a.packed, npu_max_seq_len=a.npu_max_seq_len, policy=policy,
                     placement=a.placement, cache_bytes=a.cache_mib << 20,
-                    batched=batched, prefill_chunk=a.prefill_chunk, calibration_path=cal_path)
+                    batched=batched, prefill_chunk=a.prefill_chunk, calibration_path=cal_path, mtp=a.mtp)
+    if tpl is None:
+        source = engine.shared.chat_template if engine.shared is not None else None
+        if not source:
+            engine.close()
+            ap.error("no chat template in the GGUF: give --hf or --chat-template")
+        tpl = ChatTemplate(source, defaults=defaults)
     name = a.name or engine.model
     httpd = serve(engine, tpl, name, a.host, a.port, default_max_tokens=a.max_tokens)
     print(f"xdna-relay serving {name} on http://{a.host}:{a.port} ({a.slots} slots, "

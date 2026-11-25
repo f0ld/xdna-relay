@@ -146,6 +146,19 @@ def test_outcome_check_overrides_model():
     assert any(pol.choose(accs[:2], [1] * 2))
 
 
+def test_unobserved_positions_borrow_from_shallower():
+    """Prior 0.6 everywhere; position 0 and 1 learned at 0.95 (only k<=2 drafted so far):
+    positions 2.. borrow 0.95 until observed, so the policy can try longer drafts."""
+    a = BatchK(k_max=6).new_sequence()  # counts observations per position
+    for _ in range(20):
+        a.observe(2, 2)
+    assert a.p[2] == 0.6 and a.effective(2) == pytest.approx(a.p[1])
+    assert a.expected(5) > Acceptance([0.6] * 6).expected(5) + 1.5
+    for _ in range(10):
+        a.observe(4, 2)  # position 2 rejected every time once drafted
+    assert a.effective(2) < 0.3 and a.expected(5) < a.expected(2) + 0.3
+
+
 def test_fixed():
     pol = BatchK(fixed=4)
     assert pol.choose([Acceptance([0.0] * 8)] * 2, [1, 1]) == [4, 4]

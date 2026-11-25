@@ -97,7 +97,7 @@ class Engine:
                  npu_max_seq_len: int = 2048, policy: PlacementPolicy | None = None,
                  placement: str = "auto", cache_bytes: int = 4 << 30, batched: bool | None = None,
                  prefill_chunk: int = 256, calibration_path: str | None = None,
-                 spec_k: int | None = None):
+                 spec_k: int | None = None, mtp: bool = False):
         from xdna_relay.backends.igpu.llama import LlamaCppExecutor
 
         if placement not in ("auto", "igpu", "npu", "split"):
@@ -108,8 +108,15 @@ class Engine:
             from xdna_relay.backends.igpu.llama_multi import SharedLlamaContext
             # hybrid models: recurrent-state snapshots to reject up to k_max drafts (ignored by
             # llama.cpp for architectures without recurrent rollback)
+            if mtp and draft_gguf:
+                raise ValueError("a draft model or the target's MTP head, not both")
             self.shared = SharedLlamaContext(gguf, n_seq=slots, n_ctx=n_ctx * slots,
-                                             n_rs_seq=BatchK.k_max if draft_gguf else 0)
+                                             n_rs_seq=BatchK.k_max if (draft_gguf or mtp) else 0, mtp=mtp)
+            self.mtp = mtp
+            if mtp:  # the target's own next-token head drafts (T-043)
+                self.spec = BatchK(fixed=spec_k, split_ragged=True)
+                if self.shared.rollback is not None:
+                    self.spec.k_max = min(self.spec.k_max, self.shared.rollback)
             if draft_gguf:
                 # the draft's batches are uneven every round (catch-up of 1 or 2 tokens, chunks):
                 # one KV buffer, so llama.cpp runs them in one pass (T-041)
@@ -122,6 +129,9 @@ class Engine:
             self.slots = [Slot(i, self.shared.seqs[i], self.dshared.seqs[i] if self.dshared else None)
                           for i in range(slots)]
         else:
+            if mtp:
+                raise ValueError("MTP drafting needs the batched engine")
+            self.mtp = False
             self.slots = [Slot(i, LlamaCppExecutor(gguf, n_ctx=n_ctx),
                                LlamaCppExecutor(draft_gguf, n_ctx=n_ctx) if draft_gguf else None)
                           for i in range(slots)]
@@ -283,7 +293,8 @@ class Engine:
         info.evaluated = len(prompt) - n0
         entry = _Decoding(slot, None, max_tokens, queue.Queue(), pending=list(prompt[n0:]))
         if self.spec is not None:
-            prepare(slot.draft, prompt, self.cache)  # the rest catches up in the stepper
+            if slot.draft is not None:
+                prepare(slot.draft, prompt, self.cache)  # the rest catches up in the stepper
             entry.seq, entry.acc = list(prompt), self.spec.new_sequence()
         t_sub = time.perf_counter()
         with self._step_cv:
@@ -312,7 +323,7 @@ class Engine:
         res.stats, res.tokens = st, list(st.tokens)
         res.total_s = st.t_total
         self.cache.put(slot.target.snapshot())
-        if self.spec is not None:
+        if slot.draft is not None and self.spec is not None:
             self.cache.put(slot.draft.snapshot())
         self._finish_prefill_stats(res, info, choice, active)
         if active and self.policy.online is not None and st.tokens:
@@ -356,7 +367,7 @@ class Engine:
             parts, owners = [(e.slot.target, [e.last], True) for e in dec], list(dec)
             if pre:
                 job = pre[0]
-                budget = min(self.prefill_chunk, self.shared.n_batch - len(dec))
+                budget = min(self.prefill_chunk, self.shared.n_batch - len(dec), self._chunk_cut(job))
                 chunk = job.pending[:budget]
                 parts.append((job.slot.target, chunk, len(chunk) == len(job.pending)))
                 owners.append(job)
@@ -387,9 +398,10 @@ class Engine:
                     if e.pending:  # the prefill chunk
                         del e.pending[:len(toks)]
                         if e.pending:
+                            if len(e.pending) == 1:
+                                self._snapshot_prompt(e)
                             continue
                         e.t_first = now
-                        self._snapshot_prompt(e)
                     t = r[0]
                     e.last = t
                     e.remaining -= 1
@@ -403,10 +415,17 @@ class Engine:
                             self._decoding.remove(e)
                         e.out.put(None)
 
+    def _chunk_cut(self, e: _Decoding) -> int:
+        """Prefill tokens the next chunk may take: hybrid targets stop one short of the
+        prompt's end, so the state at prompt[:-1] can be snapshotted (_snapshot_prompt)."""
+        n = len(e.pending)
+        return n - 1 if n > 1 and getattr(e.slot.target, "rollback", None) is not None else n
+
     def _snapshot_prompt(self, e: _Decoding) -> None:
-        """Hybrid targets cannot truncate back to the prompt later; a next chat turn extends
-        the prompt (its history may rewrite this answer), so keep a snapshot of it now
-        (~40 ms for the 35B-A3B; the target holds exactly the prompt here)."""
+        """Hybrid targets cannot truncate back into the prompt later. Keep a snapshot of
+        prompt[:-1] (~20 ms for the 35B-A3B): a next chat turn extends the prompt (its
+        history may rewrite this answer), a regenerate repeats it; either reuses all but
+        the one token that must be evaluated for logits."""
         if getattr(e.slot.target, "rollback", None) is None:
             return
         snap = e.slot.target.snapshot()
@@ -423,12 +442,21 @@ class Engine:
         counts = sorted(set(range(1, 13)) | {16, 24, 32, top} | {64, 128, self.prefill_chunk,
                                                                    self.prefill_chunk + 8})
         filler = (self.shared.tokenize("The quick brown fox jumps over the lazy dog. ", False) * 64)
-        for ctx, d in ((self.shared, self.spec.verify), (self.dshared, self.spec.draft)):
+        sweeps = [(self.shared, self.spec.verify)] + ([(self.dshared, self.spec.draft)] if self.dshared else [])
+        for ctx, d in sweeps:
             ex = ctx.seqs[0]
             ex.reset()
             ex.eval(filler[:32])
+            base = ex.snapshot() if ex.rollback is not None else None  # hybrid: cannot truncate far
+
+            def back():
+                if base is not None:
+                    ex.restore(base)
+                else:
+                    ex.truncate(32)
+
             ctx.step([(ex, filler[32:33], True)])  # warm
-            ex.truncate(32)
+            back()
             for n in counts:
                 if n > ctx.n_batch:
                     continue
@@ -437,9 +465,24 @@ class Engine:
                     t = time.perf_counter()
                     ctx.step([(ex, filler[32:32 + n], "all" if n <= top else True)])
                     best = min(best or 1e9, time.perf_counter() - t)
-                    ex.truncate(32)
+                    back()
                 d[n] = best
             ex.reset()
+        if self.mtp:  # one MTP draft step for n sequences drafting together
+            seqs = self.shared.seqs
+            for ex in seqs:
+                ex.reset()
+                ex.eval(filler[:32])
+            self.shared.mtp_draft(seqs[:1], [filler[32]], [1])  # warm
+            for n in range(1, len(seqs) + 1):
+                best = None
+                for _ in range(reps):
+                    t = time.perf_counter()
+                    self.shared.mtp_draft(seqs[:n], [filler[32]] * n, [2] * n)
+                    best = min(best or 1e9, (time.perf_counter() - t) / 2)
+                self.spec.draft[n] = best
+            for ex in seqs:
+                ex.reset()
 
     def _round_spec(self, entries: list[_Decoding]) -> list[_Decoding]:
         """One speculative round (see the module doc); returns the entries that finished."""
@@ -449,6 +492,8 @@ class Engine:
         job = pre[0] if pre else None
         if not dec and job is None:
             return finished
+        if self.mtp:
+            return self._round_spec_steps(entries, finished, dec, job)
         drafting = [e for e in dec if len(e.seq) - e.slot.draft.n_past <= DRAFT_MAX_LAG]
         lagging = [e for e in dec if e not in drafting]
         # draft catch-up without logits, up to seq[:-1]: lagging decoders, the prefilling request
@@ -481,13 +526,39 @@ class Engine:
             for i, r in zip(idx, self.dshared.step([(drafting[i].slot.draft, [drafts[i][-1]], True) for i in idx])):
                 drafts[i].append(r[0])
         t2 = time.perf_counter()
+        return self._verify_round(finished, dec, job, drafting, ks, drafts, npu_busy, t0, t1, t2, first_tokens)
 
+    def _round_spec_steps(self, entries, finished, dec, job) -> list[_Decoding]:
+        """A speculative round with the target's MTP head as drafter: no draft context to
+        catch up (the MTP state follows every target batch), one batched MTP step per draft
+        position."""
+        chunk_n = min(self.prefill_chunk, len(job.pending)) if job is not None else 0
+        ks = self.spec.choose([e.acc for e in dec], [1] * len(dec), extra_verify=chunk_n)
+        ks = [max(0, min(k, e.remaining - 1)) for k, e in zip(ks, dec)]
+        npu_busy = self._npu_lock.locked()
+        t0 = time.perf_counter()
+        owners = [i for i, k in enumerate(ks) if k > 0]
+        drafts = [[] for _ in dec]
+        if owners:
+            got = self.shared.mtp_draft([dec[i].slot.target for i in owners], [dec[i].seq[-1] for i in owners],
+                                        [ks[i] for i in owners])
+            for i, d in zip(owners, got):
+                drafts[i] = d
+        t2 = time.perf_counter()
+        steps = max(ks, default=0)
+        t1 = t0 + (t2 - t0) / steps if steps else t2  # first step (BatchK's first draft call)
+        return self._verify_round(finished, dec, job, dec, ks, drafts, npu_busy, t0, t1, t2, len(owners))
+
+    def _verify_round(self, finished, dec, job, drafting, ks, drafts, npu_busy, t0, t1, t2,
+                      first_tokens) -> list[_Decoding]:
+        """Verify every decoding sequence's [last, drafts] in one target batch (a prefill
+        chunk riding along), keep the accepted prefix plus the correction, roll back."""
         pos = {id(e): i for i, e in enumerate(drafting)}
         vparts = [(e.slot.target, [e.seq[-1]] + (drafts[pos[id(e)]] if id(e) in pos else []), "all") for e in dec]
         n_verify = sum(len(t) for _, t, _ in vparts)
         chunk = []
         if job is not None:
-            chunk = job.pending[:min(self.prefill_chunk, self.shared.n_batch - n_verify)]
+            chunk = job.pending[:min(self.prefill_chunk, self.shared.n_batch - n_verify, self._chunk_cut(job))]
             if chunk:
                 vparts.append((job.slot.target, chunk, len(chunk) == len(job.pending)))
         out = self.shared.step(vparts)
@@ -502,7 +573,7 @@ class Engine:
             while j < len(d) and d[j] == rows[j][0]:
                 j += 1
             e.slot.target.truncate(base + 1 + j)
-            if e.slot.draft.n_past > base + 1 + j:
+            if e.slot.draft is not None and e.slot.draft.n_past > base + 1 + j:
                 e.slot.draft.truncate(base + 1 + j)
             if id(e) in pos:
                 accepted[pos[id(e)]] = j
@@ -520,10 +591,11 @@ class Engine:
                     break
         if chunk:
             del job.pending[:len(chunk)]
+            if len(job.pending) == 1:
+                self._snapshot_prompt(job)
             if not job.pending:
                 t = out[-1][0]
                 job.t_first = time.perf_counter()
-                self._snapshot_prompt(job)
                 job.seq.append(t)
                 job.remaining -= 1
                 job.out.put(t)

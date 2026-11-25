@@ -33,7 +33,7 @@ def _bind(lib) -> None:
     P, I = C.c_void_p, C.c_int
     IP, FP = C.POINTER(C.c_int), C.POINTER(C.c_float)
     sig = {
-        "rl_load_multi": (P, [C.c_char_p, I, I, I, I, I, I, I]),
+        "rl_load_multi": (P, [C.c_char_p, I, I, I, I, I, I, I, I]),
         "rl_eval_seq": (I, [P, I, IP, I, I, I]),
         "rl_decode_multi": (I, [P, I, IP, IP, IP]),
         "rl_decode_batch": (I, [P, I, IP, IP, IP, IP]),
@@ -41,6 +41,9 @@ def _bind(lib) -> None:
         "rl_seq_truncate": (I, [P, I, I]),
         "rl_seq_pos_max": (I, [P, I]),
         "rl_model_kind": (I, [P]),
+        "rl_mtp_enable": (I, [P]),
+        "rl_chat_template": (C.c_char_p, [P]),
+        "rl_mtp_draft": (I, [P, I, IP, IP, IP, IP, IP, I]),
         "rl_n_rs_seq": (I, [P]),
         "rl_state_seq_size": (C.c_size_t, [P, I]),
         "rl_state_seq_get": (C.c_size_t, [P, I, C.c_void_p, C.c_size_t]),
@@ -58,11 +61,11 @@ class SharedLlamaContext:
 
     def __init__(self, gguf: str, *, n_seq: int, n_ctx: int = 16384, n_batch: int = 512,
                  n_gpu_layers: int = -1, flash_attn: int = 1, name: str | None = None,
-                 kv_unified: bool = False, n_rs_seq: int = 0):
+                 kv_unified: bool = False, n_rs_seq: int = 0, mtp: bool = False):
         self._l = _lib()
         _bind(self._l)
         self._h = self._l.rl_load_multi(str(gguf).encode(), n_gpu_layers, n_ctx, n_batch, n_rs_seq, flash_attn,
-                                        n_seq, 1 if kv_unified else 0)
+                                        n_seq, 1 if kv_unified else 0, 1 if mtp else 0)
         if not self._h:
             raise RuntimeError(f"llama.cpp could not load {gguf}")
         self.name = name or Path(gguf).stem
@@ -74,6 +77,12 @@ class SharedLlamaContext:
         # within the last batch; attention-only models truncate anywhere
         self.kind = self._l.rl_model_kind(self._h)
         self.rollback = self._l.rl_n_rs_seq(self._h) if self.kind else None
+        # MTP (T-043): the model's own next-token head drafts; every decode keeps it current
+        self.mtp = False
+        if mtp:
+            if self._l.rl_mtp_enable(self._h) != 0:
+                raise RuntimeError(f"{gguf}: no MTP (nextn) layer, or its context failed")
+            self.mtp = True
         self.lock = threading.RLock()
         self.decodes = 0  # llama_decode calls; a row readout is valid until the next one
         self._tok = (C.c_int * n_batch)()
@@ -164,6 +173,27 @@ class SharedLlamaContext:
             else:
                 res.append(None)
         return res
+
+    def mtp_draft(self, seqs: list["LlamaSeqExecutor"], last: list[int], ks: list[int]) -> list[list[int]]:
+        """Greedy MTP drafts: seqs[i] (holding seq[:-1]) continues from ``last[i]`` and drafts
+        ks[i] tokens; the steps are batched across sequences."""
+        n, kmax = len(seqs), max(ks, default=0)
+        if n == 0 or kmax == 0:
+            return [[] for _ in seqs]
+        A = C.c_int * n
+        out = (C.c_int * (n * kmax))()
+        with self.lock:
+            rc = self._l.rl_mtp_draft(self._h, n, A(*[s.seq for s in seqs]), A(*last),
+                                      A(*[s.n_past for s in seqs]), A(*ks), out, kmax)
+        if rc != 0:
+            raise RuntimeError(f"MTP draft failed: {rc}")
+        return [list(out[i * kmax:i * kmax + k]) for i, k in enumerate(ks)]
+
+    @property
+    def chat_template(self) -> str | None:
+        """The GGUF's Jinja chat template (tokenizer.chat_template), if it carries one."""
+        t = self._l.rl_chat_template(self._h)
+        return t.decode() if t else None
 
     # shared vocabulary helpers
     def tokenize(self, text: str, add_special: bool = True) -> list[int]:

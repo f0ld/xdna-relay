@@ -244,18 +244,32 @@ class Acceptance:
 
     p: list[float]
     ema: float = 0.15
+    n: list[int] = field(default_factory=list)  # observations per position
+    min_obs: int = 4
+
+    def effective(self, i: int) -> float:
+        """p[i], or while position i has fewer than ``min_obs`` observations, at least the
+        effective p of position i-1: positions never drafted keep their prior, so short
+        drafts would stay short even when every draft is accepted (T-030/T-043: k ~1.6 at
+        92% acceptance)."""
+        if i == 0 or not self.n or self.n[i] >= self.min_obs:  # no counts kept: p as given
+            return self.p[i]
+        return max(self.p[i], self.effective(i - 1))
 
     def expected(self, k: int) -> float:
         """Expected tokens a round with draft length k emits (accepted drafts + 1)."""
         e, run = 1.0, 1.0
         for i in range(k):
-            run *= self.p[i]
+            run *= self.effective(i)
             e += run
         return e
 
     def observe(self, k: int, accepted: int) -> None:
+        if len(self.n) < len(self.p):
+            self.n = self.n + [0] * (len(self.p) - len(self.n))
         for i in range(min(accepted + 1, k)):
             self.p[i] = (1 - self.ema) * self.p[i] + self.ema * (1.0 if i < accepted else 0.0)
+            self.n[i] += 1
 
 
 @dataclass
@@ -301,13 +315,14 @@ class BatchK:
     rates: dict = field(default_factory=dict)  # (decoding seqs, drafted) -> [tokens/s EMA, rounds]
     _zero_rounds: int = 0
     _size_rounds: dict = field(default_factory=dict)
+    _pooled_n: list = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.p:
             self.p = [self.p_prior] * self.k_max
 
     def new_sequence(self) -> Acceptance:
-        return Acceptance(list(self.p), self.ema)
+        return Acceptance(list(self.p), self.ema, list(self._pooled_n) or [0] * len(self.p))
 
     def _upd(self, d: dict[int, float], key: int, v: float) -> None:
         d[key] = v if key not in d else (1 - self.ema) * d[key] + self.ema * v
@@ -395,8 +410,9 @@ class BatchK:
         if k_hi > 0:
             if k_hi > 1:
                 self._upd(self.draft, sum(1 for k in ks if k > 1), t_rest / (k_hi - 1))
-        pooled = Acceptance(self.p, self.ema)
+        pooled = Acceptance(self.p, self.ema, self._pooled_n or [0] * len(self.p))
         for k, j, acc in zip(ks, accepted, accs):
             if k > 0:
                 acc.observe(k, j)
                 pooled.observe(k, j)
+        self._pooled_n = pooled.n

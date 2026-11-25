@@ -146,3 +146,17 @@ server now reinstalls `signal.default_int_handler`; in scripts prefer `kill -TER
 The parent kept the child's end of the `Pipe` open, so `recv()` never saw EOF when the worker
 died (e.g. a script without an `if __name__ == "__main__":` guard: spawn re-runs it). The
 parent now closes it after `start()` and raises "NPU worker exited".
+
+## MoE (Qwen3.6-35B-A3B) on llama.cpp (T-042/T-043, 2026-11-25)
+- Greedy output depends on batch shape beyond near-ties: plain decode alone vs batched with
+  another sequence diverged with a 0.35-logit gap (expert routing flips). Do not use the
+  0.25 near-tie rule; check teacher-forced gaps to the target's argmax (T-043).
+- Verify cost grows ~12–15 ms per extra token (more experts read); draft lengths must be
+  costed per batch size (start-up sweep), not assumed flat.
+- MTP needs `llama_model_params.load_mtp = true` at load, or the MTP context aborts
+  ("MTP block missing nextn.eh_proj").
+- llama.cpp rolls a sequence back by itself when a batch starts below its last position
+  (recurrent snapshot index, KV overwrite): a missing explicit truncate is not caught by
+  output checks; keep the explicit truncate (MTP state and bookkeeping depend on it).
+- Hybrid prompt snapshots: one token must still be evaluated for logits, so a snapshot of the
+  whole prompt is useless for the same prompt; snapshot prompt[:-1].

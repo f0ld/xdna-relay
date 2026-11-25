@@ -45,13 +45,17 @@ def main():
     ap.add_argument("--n", default="1,2,4")
     ap.add_argument("--tokens", type=int, default=128)
     ap.add_argument("--modes", default="0,adaptive,3")
+    ap.add_argument("--gguf", default=str(QWEN3_8B_Q4))
+    ap.add_argument("--draft", default=str(QWEN3_06B_Q8), help="draft GGUF ('' with --mtp)")
+    ap.add_argument("--mtp", action="store_true", help="the target's MTP head drafts (T-043)")
     a = ap.parse_args()
     from xdna_relay.server.engine import Engine
     from xdna_relay.sched.calibration_store import power_source
     ns = [int(x) for x in a.n.split(",")]
     prof = Path("/sys/firmware/acpi/platform_profile").read_text().strip()
     print(f"# power {power_source()}, platform profile {prof}")
-    e = Engine(str(QWEN3_8B_Q4), slots=max(ns), n_ctx=2048, draft_gguf=str(QWEN3_06B_Q8))
+    print(f"# {Path(a.gguf).stem}, " + ("MTP" if a.mtp else f"draft {Path(a.draft).stem}"))
+    e = Engine(a.gguf, slots=max(ns), n_ctx=2048, draft_gguf=None if a.mtp else a.draft, mtp=a.mtp)
     names = list(PROMPTS)
     print("n,mode,all_active_tps,min_req_tps,mean_k,accept_rate,prompts,gpu")
     for n in ns:

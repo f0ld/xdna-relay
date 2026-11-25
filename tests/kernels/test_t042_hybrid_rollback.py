@@ -163,7 +163,7 @@ def test_engine_second_turn_reuses_prompt_snapshot(igpu):
         p2 = e.tokenize(t1 + "It links to node n4, per fact 3.<|im_end|>\n<|im_start|>user\nAnd n7?<|im_end|>\n"
                         "<|im_start|>assistant\n<think>\n\n</think>\n\n")
         warm = e.complete(p2, 16)
-        assert warm.reused >= len(p1), (warm.reused, len(p1))
+        assert warm.reused >= len(p1) - 1, (warm.reused, len(p1))  # snapshot at p1[:-1]
         e.reset_state()
         cold = e.complete(p2, 16)
         assert cold.reused == 0

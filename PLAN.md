@@ -8,7 +8,7 @@ Status values: `TODO`, `IN PROGRESS`, `REVIEW`, `DONE`, `BLOCKED` (see PROTOCOL.
   keep a done-command and tests; review files are written only for larger milestones.
 - Main target since 2026-11-25: Qwen3.6-35B-A3B (ADR 0008), milestone MQ below. The Qwen3-8B
   path is paused with a resume guide: `docs/knowledge/qwen3-8b-path.md`.
-- Active task: T-043
+- Active task: T-044
 - Power: the machine runs platform profile `low-power` (fan noise); NPU may run FLM
   `--pmode performance`. Every bench row records the profile.
 - Operator TODOs: see `docs/knowledge/environment.md` → "Operator TODOs" (driver timeout).
@@ -19,7 +19,7 @@ Baseline (2026-11-25-moe-35b-a3b.md): iGPU decode 20.9 tok/s, prefill 471 tok/s,
 (llama-server) 31.9 tok/s on code / 19.8 on prose.
 - T-042 — Hybrid-state rollback: recurrent (linear-attention) state checkpoints in the shim;
   executor capability used by speculative verify and the prefix cache — Status: DONE (`scripts/test.sh T-042` 11/11; rollback ≤8 tokens costs 2–4% decode; snapshots 69–102 MiB, ~20 ms)
-- T-043 — MTP drafting through the shim (llama.cpp draft-mtp) under BatchK; batched — Status: IN PROGRESS
+- T-043 — MTP drafting through the shim (llama.cpp draft-mtp) under BatchK; batched — Status: DONE (`scripts/test.sh T-043` 9/9; 1 request 20 → 26–32 tok/s, 2 requests +17%; server `--mtp`, chat template from the GGUF)
 - T-044 — Engine/server on the 35B-A3B (batched, prefix cache with checkpoints, calibration) — Status: TODO
 - T-045 — IRON path: op inventory of qwen35moe (gated linear attention, MoE experts, full
   attention layers), what IRON has, what needs kernels; plan of the graph — Status: TODO
