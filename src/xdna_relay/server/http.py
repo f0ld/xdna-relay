@@ -41,7 +41,7 @@ def _relay_info(res, notes):
             "explore": res.explore}
 
 
-def make_handler(engine, chat_template, model_name: str):
+def make_handler(engine, chat_template, model_name: str, default_max_tokens: int = 256):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -98,7 +98,7 @@ def make_handler(engine, chat_template, model_name: str):
             else:
                 return self._json(404, {"error": {"message": f"no route {self.path}"}})
             prompt = engine.tokenize(text)
-            max_tokens = int(req.get("max_tokens") or req.get("max_completion_tokens") or 256)
+            max_tokens = int(req.get("max_tokens") or req.get("max_completion_tokens") or default_max_tokens)
             stops = req.get("stop") or []
             stops = [stops] if isinstance(stops, str) else list(stops)
             if req.get("stream"):
@@ -196,8 +196,9 @@ def make_handler(engine, chat_template, model_name: str):
     return Handler
 
 
-def serve(engine, chat_template, model_name: str, host: str = "127.0.0.1", port: int = 8090):
-    httpd = ThreadingHTTPServer((host, port), make_handler(engine, chat_template, model_name))
+def serve(engine, chat_template, model_name: str, host: str = "127.0.0.1", port: int = 8090,
+          default_max_tokens: int = 256):
+    httpd = ThreadingHTTPServer((host, port), make_handler(engine, chat_template, model_name, default_max_tokens))
     httpd.daemon_threads = True
     return httpd
 
