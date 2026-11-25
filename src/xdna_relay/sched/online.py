@@ -36,19 +36,40 @@ import numpy as np
 
 @dataclass
 class LinFit:
-    """y = c0 + c1 * x by exponentially forgetting least squares, ridge-pulled to a prior."""
+    """y = c0 + c1 * x by exponentially forgetting least squares, ridge-pulled to a prior,
+    plus a per-bin correction where observed.
+
+    The line extrapolates to sizes never seen; a bin's correction (EMA of the residual of its
+    observations against the current line) makes observed sizes predict what was measured
+    where the cost is not linear (batched iGPU prefill moves in 256-token chunks: measured
+    0.41 s at 83 tokens where the line, dominated by long prompts, said 0.62)."""
 
     c0: float  # prior intercept
     c1: float  # prior slope
     tau: float = 1.0  # prior strength, in observations
     forget: float = 0.97  # per-observation decay of older data (~33 effective)
+    bin_width: float = 0.0  # x per bin (0: no bins)
+    alpha: float = 0.3  # bin correction EMA weight
     n: int = 0
     _s: np.ndarray = field(default_factory=lambda: np.zeros(5))  # sw, sx, sxx, sy, sxy
+    _bins: dict = field(default_factory=dict)  # bin -> residual EMA
+
+    def _bin(self, x: float):
+        return None if self.bin_width <= 0 else int(x // self.bin_width)
+
+    def line(self, x: float) -> float:
+        c0, c1 = self.coef()
+        return c0 + c1 * x
 
     def add(self, x: float, y: float) -> None:
         self._s *= self.forget
         self._s += np.array([1.0, x, x * x, y, x * y])
         self.n += 1
+        b = self._bin(x)
+        if b is not None:
+            r = y - self.line(x)
+            old = self._bins.get(b)
+            self._bins[b] = r if old is None else (1 - self.alpha) * old + self.alpha * r
 
     def coef(self) -> tuple[float, float]:
         sw, sx, sxx, sy, sxy = self._s
@@ -59,8 +80,7 @@ class LinFit:
         return float(c0), float(c1)
 
     def __call__(self, x: float) -> float:
-        c0, c1 = self.coef()
-        return c0 + c1 * x
+        return self.line(x) + self._bins.get(self._bin(x), 0.0)
 
 
 @dataclass
@@ -85,29 +105,30 @@ class OnlineCosts:
         self.short_rows = prior.npu_short_rows or short_rows
         p = prior
         self._lock = threading.Lock()
-        mk = lambda c0, c1: LinFit(c0, c1, tau=tau, forget=forget)  # noqa: E731
+        mk = lambda c0, c1, w=0.0: LinFit(c0, c1, tau=tau, forget=forget, bin_width=w)  # noqa: E731
+        IG, NP = 0.128, 1.0  # bins: 128 tokens (iGPU, x = n / 1000), one block (NPU)
         # iGPU: x = n / 1000
         self.igpu = {}
         for small in (False, True):
-            self.igpu[(False, small)] = mk(0.0, 1000.0 / p.igpu_prefill_tps)
-            self.igpu[(True, small)] = mk(p.igpu_wait_s, p.igpu_slow * 1000.0 / p.igpu_prefill_tps)
+            self.igpu[(False, small)] = mk(0.0, 1000.0 / p.igpu_prefill_tps, IG)
+            self.igpu[(True, small)] = mk(p.igpu_wait_s, p.igpu_slow * 1000.0 / p.igpu_prefill_tps, IG)
         # NPU part (eval + pack + handoff), x = blocks. The preset's contended NPU time also
         # held the last token's iGPU eval; take that out so the parts compose.
         last = self.igpu[(True, True)](1 / 1000.0)
         hb = p.handoff_row_s * p.npu_block
         self.npu = {}
         for version, (fx, blk) in self._versions().items():
-            self.npu[(version, False)] = mk(fx, blk + hb)
-            self.npu[(version, True)] = mk(fx * p.npu_slow + p.npu_wait_s - last, blk * p.npu_slow)
+            self.npu[(version, False)] = mk(fx, blk + hb, NP)
+            self.npu[(version, True)] = mk(fx * p.npu_slow + p.npu_wait_s - last, blk * p.npu_slow, NP)
         self.keep_igpu = Ema(p.keep_igpu, alpha=0.2)  # one observation per request (reporting)
         self.keep_npu = Ema(p.keep_npu, alpha=0.2)
         # decode-seconds one other decoder loses while a request is prefilled, fitted like the
         # times (same features): short iGPU prefills are mostly a fixed wait during which the
         # others keep stepping, long ones stall them, so one keep fraction cannot fit both
         # (measured keep_iGPU 0.31-0.46 at 82-139 tokens, 0.13-0.19 at 398-1327).
-        self.lost_igpu = {sm: mk(*(c * (1 - p.keep_igpu) for c in self.igpu[(True, sm)].coef()))
+        self.lost_igpu = {sm: mk(*(c * (1 - p.keep_igpu) for c in self.igpu[(True, sm)].coef()), IG)
                           for sm in (False, True)}
-        self.lost_npu = {v: mk(*(c * (1 - p.keep_npu) for c in self.npu[(v, True)].coef()))
+        self.lost_npu = {v: mk(*(c * (1 - p.keep_npu) for c in self.npu[(v, True)].coef()), NP)
                          for v in ("short", "long")}
         self._plain_step = Ema(0.0, alpha=0.1)
         self._seen: dict[tuple, int] = {}  # observations per (part, bin), for exploration

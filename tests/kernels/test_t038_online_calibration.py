@@ -183,3 +183,19 @@ def test_npu_option_loss_not_double_counted():
         o.observe_window("igpu", 1.36, round((1.36 - 1.17) / 0.065), n=398)
     c = p.choose(398, active=1)
     assert c.device == "npu", (c, p.estimate("split", 398, 1))
+
+
+def test_bins_correct_a_nonlinear_short_end():
+    """Batched iGPU prefill in 256-token chunks: 83 tokens took 0.41 s although the line
+    through long prompts says ~0.6; once observed, the bin predicts what was measured, and
+    unobserved sizes still follow the line."""
+    p = PlacementPolicy.calibrating(costs_for(PRESET))
+    meas = {83: 0.41, 398: 1.37, 968: 3.05, 1718: 5.45}
+    for _ in range(15):
+        for n, t in meas.items():
+            p.observe_part("igpu", n, t, active=1)
+    o = p.online
+    for n, t in meas.items():
+        assert o.igpu_s(n, 1) == pytest.approx(t, rel=0.08), n
+    line = o.igpu[(True, False)].line(1300 / 1000)
+    assert o.igpu_s(1300, 1) == pytest.approx(line)  # bin never observed: the line
