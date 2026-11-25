@@ -270,7 +270,7 @@ class Engine:
             # how much the others kept while this request was prefilled (arrival -> first token)
             t_first = t0 + res.ttft_s
             steps = sum(1 for t in list(self._step_ends) if t0 <= t <= t_first)
-            n_dev = res.npu_tokens if choice.device == "npu" else info.evaluated
+            n_dev = res.npu_tokens if choice.device in ("npu", "split") else info.evaluated
             res.keep_observed = self.policy.online.observe_window(choice.device, res.ttft_s, steps, n_dev)
 
     def _stepper(self) -> None:

@@ -197,7 +197,12 @@ class PlacementPolicy:
         igpu_t = o.igpu_s(n - k, active)
         t = (npu_busy_s if k else 0.0) + npu_t + igpu_t
         # decode-seconds the others lose, fitted per part from measured request windows
-        lost = active * (o.npu_lost_s(k) + o.igpu_lost_s(n - k))
+        # an NPU window's measured loss already covers its 1-token iGPU tail; a split adds the
+        # loss of the tail beyond that one token
+        if k:
+            lost = active * (o.npu_lost_s(k) + max(0.0, o.igpu_lost_s(n - k) - o.igpu_lost_s(1)))
+        else:
+            lost = active * o.igpu_lost_s(n)
         dev = device if not (device == "npu" and k == 0) else "igpu"
         return Choice(dev, t, lost, t + self.decode_weight * lost, npu_tokens=k)
 

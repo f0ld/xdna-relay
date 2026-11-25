@@ -49,11 +49,19 @@ def test_learns_a_slower_npu_and_flips_the_decision():
     p = PlacementPolicy.calibrating(costs_for(PRESET))
     assert p.choose(1721, active=1).device in ("npu", "split")
     rng = np.random.default_rng(0)
-    for _ in range(40):
+    o = p.online
+    for _ in range(5):
+        o.observe_step(0.065, prefill_chunk=False, npu_busy=False)
+    keep = {"npu": 0.64, "igpu": 0.067}  # the preset's: the others keep this share
+    for _ in range(40):  # what the engine reports per request: parts and the whole window
         k = int(rng.integers(300, 2000))
-        p.observe_part("npu", k, true_npu(k) * rng.normal(1, 0.03), active=1)
-        n = int(rng.integers(1, 2000))
-        p.observe_part("igpu", n, true_igpu(n) * rng.normal(1, 0.03), active=1)
+        t = true_npu(k) * rng.normal(1, 0.03)
+        p.observe_part("npu", k, t, active=1)
+        o.observe_window("npu", t, round(t * keep["npu"] / 0.065), n=k)
+        n = int(rng.integers(65, 2000))
+        t = true_igpu(n) * rng.normal(1, 0.03)
+        p.observe_part("igpu", n, t, active=1)
+        o.observe_window("igpu", t, round(t * keep["igpu"] / 0.065), n=n)
     for k in (700, 1500):
         assert p.online.npu_s(k, 1) == pytest.approx(true_npu(k), rel=0.12), k
     assert p.choose(1721, active=1).device == "igpu"
@@ -73,7 +81,7 @@ def test_keep_from_request_windows():
     assert o.plain_step_s == pytest.approx(0.065, abs=1e-3)
     assert o.keep_igpu.value == pytest.approx(3 * 0.065 / 1.39, abs=0.02)
     assert o.keep_npu.value == pytest.approx(17 * 0.065 / 1.68, abs=0.02)
-    assert o.observe_window("split", 1.3, 15) is None
+    assert o.observe_window("split", 1.3, 15, n=256) is None  # tails vary: not used
 
 
 def test_lost_time_fitted_per_size():
@@ -157,3 +165,21 @@ def test_no_exploration_without_decoders_or_calibration():
     assert not st.choose(1721, active=1).explore
     on = PlacementPolicy.calibrating(costs_for(PRESET))
     assert not on.choose(1721, active=0).explore
+
+
+def test_npu_option_loss_not_double_counted():
+    """Measured at 398 tokens: NPU TTFT 1.55 s, others lose 0.48 s; iGPU 1.36 s, others lose
+    1.17 s. After observing both, the NPU option must win (the tail's loss is inside the NPU
+    window and must not be added from the never-observed iGPU tail prior)."""
+    p = PlacementPolicy.calibrating(costs_for("llama3.2-3b"), explore_margin=0.0)
+    o = p.online
+    for _ in range(5):
+        o.observe_step(0.065, prefill_chunk=False, npu_busy=False)
+    for _ in range(20):
+        p.observe_part("npu", 397, 1.32, active=1)
+        p.observe_part("igpu", 1, 0.23, active=1)
+        o.observe_window("npu", 1.55, round((1.55 - 0.48) / 0.065), n=397)
+        p.observe_part("igpu", 398, 1.36, active=1)
+        o.observe_window("igpu", 1.36, round((1.36 - 1.17) / 0.065), n=398)
+    c = p.choose(398, active=1)
+    assert c.device == "npu", (c, p.estimate("split", 398, 1))

@@ -182,8 +182,10 @@ class OnlineCosts:
         """A request placed on ``device`` ("igpu" or "npu"; ``n`` tokens on it) took ``seconds``
         from arrival to its first token while the others completed ``steps`` decode steps: each
         lost seconds - steps x plain step of decode time (fitted per device and size) and kept
-        steps x plain step / seconds of its speed (reported). Returns the keep (None: no
-        baseline yet, or a placement not tracked: split mixes both)."""
+        steps x plain step / seconds of its speed (reported). A window covers the whole
+        request, so for "npu" (``n`` = NPU tokens) it includes the 1-token iGPU tail's loss.
+        Split windows are not used (their tails vary). Returns the keep (None: no baseline
+        yet, or split)."""
         if device not in ("igpu", "npu") or seconds <= 0:
             return None
         with self._lock:
