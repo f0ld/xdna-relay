@@ -110,6 +110,7 @@ class OnlineCosts:
         self.lost_npu = {v: mk(*(c * (1 - p.keep_npu) for c in self.npu[(v, True)].coef()))
                          for v in ("short", "long")}
         self._plain_step = Ema(0.0, alpha=0.1)
+        self._seen: dict[tuple, int] = {}  # observations per (part, bin), for exploration
 
     def _versions(self) -> dict:
         p = self.prior
@@ -139,15 +140,29 @@ class OnlineCosts:
 
     # ---- observations -------------------------------------------------------------------
 
+    def _bin(self, device: str, n: int) -> tuple:
+        if device == "igpu":
+            return ("igpu", n <= SMALL, n // 256)
+        return ("npu", self._version(n), self._blocks(n))
+
+    def seen(self, device: str, n: int) -> int:
+        """Observations of the ``device`` part near size ``n`` (same 256-row bin)."""
+        with self._lock:
+            return self._seen.get(self._bin(device, n), 0)
+
     def observe_igpu(self, n: int, seconds: float, active: int) -> None:
         if n > 0 and seconds > 0:
             with self._lock:
                 self.igpu[(bool(active), n <= SMALL)].add(n / 1000.0, seconds)
+                b = self._bin("igpu", n)
+                self._seen[b] = self._seen.get(b, 0) + 1
 
     def observe_npu(self, k: int, seconds: float, active: int) -> None:
         if k > 0 and seconds > 0:
             with self._lock:
                 self.npu[(self._version(k), bool(active))].add(self._blocks(k), seconds)
+                b = self._bin("npu", k)
+                self._seen[b] = self._seen.get(b, 0) + 1
 
     def observe_step(self, seconds: float, prefill_chunk: bool, npu_busy: bool) -> None:
         """One decode step's wall time; plain steps (no prefill chunk, NPU idle) set the

@@ -69,6 +69,7 @@ class Result:
     evaluated: int = 0
     stopped: bool = False
     keep_observed: float | None = None  # others' decode speed kept during this prefill
+    explore: bool = False  # placement chosen to learn its cost
 
 
 class Engine:
@@ -186,6 +187,7 @@ class Engine:
         try:
             choice, active, n_igpu, n_npu = self._place(slot, prompt)
             res.placement, res.estimate_ttft_s = choice.device, choice.ttft_s
+            res.explore = choice.explore
             if choice.device in ("npu", "split"):
                 k = len(prompt) - 1 if choice.device == "npu" else choice.npu_tokens
                 res.npu_tokens = k

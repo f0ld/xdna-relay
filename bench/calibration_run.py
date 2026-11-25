@@ -33,10 +33,9 @@ def main():
     ap.add_argument("--gen-a", type=int, default=120)
     ap.add_argument("--gen-b", type=int, default=8)
     ap.add_argument("--every", type=int, default=4)
-    ap.add_argument("--a-alone", type=float, default=15.5, help="A's tok/s alone (for client keep)")
     a = ap.parse_args()
     sizes = [int(w) for w in a.b_words.split(",")]
-    print("round,b_tokens,placement,npu_tokens,est_ttft_ms,ttft_ms,err_pct,a_tps_during,keep_client,keep_server",
+    print("round,b_tokens,placement,npu_tokens,est_ttft_ms,ttft_ms,err_pct,a_tps_during,keep_client,keep_server,explore",
           flush=True)
     for i in range(a.rounds):
         words = sizes[i % len(sizes)]
@@ -56,10 +55,12 @@ def main():
         tb1 = b_st[0] if b_st else time.perf_counter()
         during = [s for s in a_st if tb0 <= s <= tb1]
         x = last["x_relay"]
+        plain = (calib(a.url)["fits"] or {}).get("plain_step_s", [0, 1 / 15.5])[1] or 1 / 15.5
         est, got = x["estimated_ttft_ms"], x["ttft_ms"]
         print(f"{i},{last['usage']['prompt_tokens']},{x['placement']},{x['npu_tokens']},{est:.0f},{got:.0f},"
               f"{100 * (est - got) / got:+.0f},{len(during) / max(tb1 - tb0, 1e-9):.1f},"
-              f"{len(during) / max(tb1 - tb0, 1e-9) / a.a_alone:.2f},{x.get('others_keep')}", flush=True)
+              f"{len(during) / max(tb1 - tb0, 1e-9) * plain:.2f},{x.get('others_keep')},{'E' if x.get('explore') else ''}",
+              flush=True)
         if (i + 1) % a.every == 0:
             print("# calibration " + json.dumps(calib(a.url)["fits"]), flush=True)
 

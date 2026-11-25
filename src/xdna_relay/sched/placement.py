@@ -119,6 +119,7 @@ class Choice:
     cost: float
     other: "Choice | None" = None  # the runner-up
     npu_tokens: int = 0  # tokens the NPU prefills (npu: all, split: whole blocks)
+    explore: bool = False  # picked to learn its cost, not as the estimated best
 
 
 @dataclass
@@ -130,6 +131,11 @@ class PlacementPolicy:
     npu_max_tokens: int = 2048  # the NPU executor's max_seq_len
     log: list = field(default_factory=list)
     online: object | None = None  # sched.online.OnlineCosts: fitted parts replace the preset
+    # Online exploration: an option within this fraction of the best cost whose main part was
+    # (almost) never observed at this size is tried, so a pessimistic extrapolation cannot
+    # lock it out (measured: the NPU at 2 blocks predicted 1.71 s, never tried, really ~1.35 s).
+    explore_margin: float = 0.2
+    explore_until: int = 2  # observations at a size after which an option is known
 
     @classmethod
     def calibrating(cls, costs: DeviceCosts, **kw) -> "PlacementPolicy":
@@ -213,8 +219,18 @@ class PlacementPolicy:
         if 0 < k < n_npu:
             opts.append(self.estimate("split", n_npu, active, npu_busy_s, npu_tokens=k))
         opts.sort(key=lambda o: o.cost)
-        opts[0].other = opts[1]
-        return opts[0]
+        best = opts[0]
+        if self.online is not None and active:
+            for o in opts[1:]:
+                if o.cost > best.cost * (1 + self.explore_margin):
+                    break
+                part = ("npu", o.npu_tokens) if o.npu_tokens else ("igpu", n)
+                if self.online.seen(*part) < self.explore_until:
+                    o.explore = True
+                    o.other = best
+                    return o
+        best.other = opts[1]
+        return best
 
     def observe_part(self, device: str, n: int, seconds: float, active: int) -> None:
         """A measured prefill part (online calibration): ``device`` "igpu" for n tokens the

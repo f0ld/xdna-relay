@@ -132,3 +132,28 @@ def test_npu_versions_split_even_with_a_single_curve_prior():
         p.observe_part("npu", 1700, 3.2, active=1)  # long: 7 blocks
     assert p.online.npu_s(300, 1) == pytest.approx(0.9, rel=0.08)
     assert p.online.npu_s(1700, 1) == pytest.approx(3.2, rel=0.08)
+
+
+def test_explores_a_near_tie_it_never_observed():
+    """A pessimistic, unobserved option within the margin is tried; once observed, the
+    estimated best wins again unless the observation says otherwise."""
+    p = PlacementPolicy.calibrating(costs_for(PRESET))
+    c = p.choose(1721, active=1)
+    best = min(("igpu", "npu", "split"), key=lambda d: p.estimate(d, 1721, 1).cost)
+    near = [d for d in ("igpu", "npu", "split") if d != best
+            and p.estimate(d, 1721, 1).cost <= 1.2 * p.estimate(best, 1721, 1).cost]
+    if near:
+        assert c.explore and c.device in near
+    for _ in range(3):  # observe every part at this size
+        p.observe_part("igpu", 1721, 5.4, active=1)
+        p.observe_part("npu", 1720, 4.4, active=1)
+        p.observe_part("npu", 1536, 4.0, active=1)
+    c = p.choose(1721, active=1)
+    assert not c.explore
+
+
+def test_no_exploration_without_decoders_or_calibration():
+    st = PlacementPolicy(costs_for(PRESET))
+    assert not st.choose(1721, active=1).explore
+    on = PlacementPolicy.calibrating(costs_for(PRESET))
+    assert not on.choose(1721, active=0).explore
