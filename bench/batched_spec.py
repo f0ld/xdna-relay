@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from gpu_watch import GpuWatch  # noqa: E402
 from spec_probe import PROMPTS  # noqa: E402
 from tests.reference.models import QWEN3_06B_Q8, QWEN3_8B_Q4, qwen3_chat  # noqa: E402
 
@@ -52,7 +53,7 @@ def main():
     print(f"# power {power_source()}, platform profile {prof}")
     e = Engine(str(QWEN3_8B_Q4), slots=max(ns), n_ctx=2048, draft_gguf=str(QWEN3_06B_Q8))
     names = list(PROMPTS)
-    print("n,mode,all_active_tps,min_req_tps,mean_k,accept_rate,prompts")
+    print("n,mode,all_active_tps,min_req_tps,mean_k,accept_rate,prompts,gpu")
     for n in ns:
         ps = [e.tokenize(qwen3_chat(PROMPTS[names[i % len(names)]])) for i in range(n)]
         for mode in a.modes.split(","):
@@ -60,7 +61,8 @@ def main():
             e.reset_state()
             run(e, ps, 4)  # prefill, cached
             stamps = [[] for _ in ps]
-            res, wall = run(e, ps, a.tokens, stamps)
+            with GpuWatch() as gw:
+                res, wall = run(e, ps, a.tokens, stamps)
             beg, end = max(s[0] for s in stamps), min(s[-1] for s in stamps)
             toks = sum(sum(1 for t in s if beg < t <= end) for s in stamps)
             all_active = toks / (end - beg) if end > beg else 0.0
@@ -69,7 +71,7 @@ def main():
             dr = sum(r.stats.drafted for r in res)
             acc = sum(r.stats.accepted for r in res)
             print(f"{n},{mode},{all_active:.1f},{min_req:.1f},{sum(ks) / max(len(ks), 1):.2f},"
-                  f"{acc / dr if dr else 0:.2f},{'+'.join(names[i % len(names)] for i in range(n))}", flush=True)
+                  f"{acc / dr if dr else 0:.2f},{'+'.join(names[i % len(names)] for i in range(n))},{gw.summary()}", flush=True)
     e.close()
 
 
