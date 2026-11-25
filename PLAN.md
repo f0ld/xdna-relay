@@ -6,7 +6,7 @@ Status values: `TODO`, `IN PROGRESS`, `REVIEW`, `DONE`, `BLOCKED` (see PROTOCOL.
 
 - Since 2026-11-24 the Architect implements directly (Implementer paused, ADR 0006). Tasks
   keep a done-command and tests; review files are written only for larger milestones.
-- Active task: **T-035** batched decode: fix NPU handoff into sequence != 0 (multi-stream state)
+- Active task: next — recalibrate placement presets for the batched engine; chunked prefill interleaving (iGPU prefill starves decode)
 - Power: the machine runs platform profile `low-power` (fan noise); NPU may run FLM
   `--pmode performance`. Every bench row records the profile.
 - Operator TODOs: see `docs/knowledge/environment.md` → "Operator TODOs" (driver timeout).
@@ -48,7 +48,7 @@ Own pieces, each an A/B against the IRON graph it replaces (Operator, 2026-11-24
 ## MS — Speculative decoding across devices
 
 - T-025 — Draft on NPU, verify on iGPU — Status: DONE (negative, ADR 0007: ~0–10% at best; FLM unusable as draft)
-- T-035 — Batched decode across slots (one llama.cpp context, n sequences, stepper thread) — Status: IN PROGRESS (2 clients 30 vs 16 tok/s total, 4: 56 vs 16; open: NPU handoff into a non-zero sequence with per-sequence KV fails, see bench/results/2026-11-25-batched-decode.md)
+- T-035 — Batched decode across slots (one llama.cpp context, n sequences, stepper thread) — Status: DONE (`scripts/test.sh T-035` 5/5, T-034 10/10; 2 clients 30 vs 16 tok/s total, 4: 56 vs 16; with NPU prefill A keeps 10 vs 0.9 tok/s during B's prefill; bench/results/2026-11-25-batched-decode.md)
 - T-034 — M7: OpenAI-compatible server (`python -m xdna_relay.server`): slots on iGPU, NPU prefill worker, prefix cache, placement per request, SSE streaming — Status: DONE (`scripts/test.sh T-034` 9/9; Qwen3-8B two requests via HTTP: A 10.2 vs 1.8–2.7 tok/s during B's prefill, B TTFT 4.7–4.9 vs 5.6–6.0 s)
 - T-033 — Prompt-chunk GEMMs on pre-packed bfp16 weights (`models/packed.py`; replaces Q4 for prefill: GEMM re-reads B per 256 rows, Q4 would still be dequantized to bfp16) — Status: DONE (`scripts/test.sh T-033` 2/2; 8B prefill 1.33–1.5x faster on long prompts, two-request makespan −21% vs iGPU; short-prompt fixed cost fixed with a streamed-B prompt version ≤640 rows: packed now faster than bf16 at every length)
 - T-032 — Prefill placement policy (`sched/placement.py`: iGPU / NPU / split by measured cost: TTFT + decode time lost by active requests) — Status: DONE (`scripts/test.sh T-032` 19/19; estimates within 15% of measured; `auto` picks the measured best on Qwen3-8B at 67/382/1702 tokens)
