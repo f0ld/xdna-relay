@@ -87,6 +87,8 @@ def main(argv=None):
     def stop(*_):
         httpd.shutdown()
 
+    # A background job from a non-interactive shell inherits SIGINT ignored; restore Ctrl-C.
+    signal.signal(signal.SIGINT, signal.default_int_handler)
     signal.signal(signal.SIGTERM, lambda *_: (httpd.server_close(), engine.close(), sys.exit(0)))
     try:
         httpd.serve_forever()

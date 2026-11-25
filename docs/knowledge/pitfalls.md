@@ -124,3 +124,10 @@ number.
 cannot make the fit degenerate. With `tau=2, forget=0.95` (~20 effective observations) the
 intercept stayed 0.07 s off a true 0.5 s after hundreds of observations: prefill intercepts are
 0.1–0.5 s, so that bias decides placements. Now `tau=1, forget=0.97` (T-038 test).
+
+## Background jobs ignore SIGINT (2026-11-25)
+A process started with `&` from a non-interactive shell (scripts, `( ... ) &`) inherits SIGINT
+as ignored, and Python then never raises KeyboardInterrupt: `kill -INT` does nothing and a
+script that waits for the server hangs forever (cost a 2 h stall in the T-040 check). The
+server now reinstalls `signal.default_int_handler`; in scripts prefer `kill -TERM`. Also:
+`pkill -f '<pattern>'` from a shell whose own command line contains the pattern kills that shell.

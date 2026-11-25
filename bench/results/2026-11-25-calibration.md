@@ -60,3 +60,36 @@ Each run exposed one modelling error; each fix has a T-038 test (14 tests now):
 | 1718 | NPU | +3 … +5% | 10.3–10.5 | NPU ✓ |
 Round 39 (279 tokens, 1.84 s TTFT) is an unexplained outlier. Starting from a preset for another
 model, the server reaches the measured-best placement at every size within ~20 requests.
+
+## T-040: calibration persisted across a restart (on AC, platform profile balanced, NPU pmode performance)
+Same setup as run 8 (Qwen3-8B Q4_K_M + packed IRON, 2 slots batched, wrong prior `llama3.2-3b`),
+`--calibration-file persist.json`. Session 1: 24 rounds from the prior (learning, exploration as in
+run 8), stopped with SIGTERM: saved on close. Session 2: new process, log
+`calibration: restored persist.json (saved 18:52:54)`, 16 rounds:
+
+| round | B tokens | placement | est ms | TTFT ms | err | A tok/s during B |
+|---|---|---|---|---|---|---|
+| 0 | 82 | igpu | 379 | 359 | +5% | 2.8 |
+| 1 | 278 | igpu | 1028 | 1043 | -1% | 3.8 |
+| 2 | 1717 | npu | 5029 | 5099 | -1% | 9.4 |
+| 3 | 397 | npu | 1737 | 1572 | +11% | 9.5 |
+| 4 | 967 | npu | 3061 | 2956 | +4% | 10.1 |
+| 5 | 138 | igpu | 602 | 638 | -6% | 3.1 |
+| 6 | 1327 | split (1280) | 3592 | 3963 | -9% | 8.8 |
+| 7 | 278 | igpu | 1022 | 1065 | -4% | 3.7 |
+| 8 | 82 | igpu | 348 | 417 | -16% | 4.8 |
+| 9 | 278 | igpu | 1015 | 1042 | -3% | 3.8 |
+| 10 | 1718 | npu | 5201 | 4691 | +11% | 10.2 |
+| 11 | 398 | npu | 1685 | 1528 | +10% | 9.8 |
+| 12 | 968 | npu | 3017 | 2960 | +2% | 10.5 |
+| 13 | 139 | igpu | 599 | 626 | -4% | 3.2 |
+| 14 | 1328 | split (1280) | 3611 | 3714 | -3% | 9.7 |
+| 15 | 279 | split (256) | 1280 | 1198 | +7% | 9.2 |
+
+- No exploration rounds; estimates within ±16% (median |err| 5%) from the first request.
+  Session 1 needed ~10 rounds to get there (round 0–2 errors −29…−47%).
+- Decisions match run 8's measured best at every size except 279 tokens, where 3 of 4 rounds
+  chose iGPU over split: a near tie in the cost model (iGPU 1.04 s TTFT but A at 3.8 tok/s vs
+  split 1.2 s with A at 9.2). Whether the decode weight should favour split there is a policy
+  question, not a calibration one.
+- Session 2 also saved on SIGTERM (file updated 18:58:50). No NPU timeouts in either session.
