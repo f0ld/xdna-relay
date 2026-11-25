@@ -145,6 +145,9 @@ def test_http_chat_stream_equals_nonstream(server, engine):
             last = ev
     assert "".join(parts) == text
     assert last["choices"][0]["finish_reason"] in ("stop", "length") and "x_relay" in last
+    for t in (full["timings"], last["timings"]):  # llama-server's speed fields (chat UIs read them)
+        assert t["predicted_n"] == full["usage"]["completion_tokens"] - 1 and t["predicted_per_second"] > 0
+        assert t["prompt_n"] > 0 and t["prompt_per_second"] > 0
 
 
 def test_http_stop_string(server):

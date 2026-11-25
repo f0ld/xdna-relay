@@ -41,6 +41,18 @@ def _relay_info(res, notes):
             "explore": res.explore}
 
 
+def _timings(res):
+    """llama-server's ``timings`` object (clients such as chat UIs read speeds from it)."""
+    gen = max(len(res.tokens) - 1, 0)  # the first token comes with the prompt
+    p_ms, d_ms = 1e3 * res.ttft_s, 1e3 * max(res.total_s - res.ttft_s, 0.0)
+    return {"cache_n": res.reused, "prompt_n": res.evaluated, "prompt_ms": round(p_ms, 3),
+            "prompt_per_token_ms": round(p_ms / res.evaluated, 3) if res.evaluated else 0.0,
+            "prompt_per_second": round(1e3 * res.evaluated / p_ms, 2) if p_ms > 0 else 0.0,
+            "predicted_n": gen, "predicted_ms": round(d_ms, 3),
+            "predicted_per_token_ms": round(d_ms / gen, 3) if gen else 0.0,
+            "predicted_per_second": round(1e3 * gen / d_ms, 2) if d_ms > 0 else 0.0}
+
+
 def make_handler(engine, chat_template, model_name: str, default_max_tokens: int = 256):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -130,7 +142,7 @@ def make_handler(engine, chat_template, model_name: str, default_max_tokens: int
                       if chat else {"index": 0, "text": text, "finish_reason": reason})
             self._json(200, {"id": rid, "object": "chat.completion" if chat else "text_completion",
                              "created": int(time.time()), "model": model_name, "choices": [choice],
-                             "usage": usage, "x_relay": _relay_info(res, notes)})
+                             "usage": usage, "timings": _timings(res), "x_relay": _relay_info(res, notes)})
 
         def _stream(self, prompt, max_tokens, stops, chat, notes):
             self.send_response(200)
@@ -185,7 +197,7 @@ def make_handler(engine, chat_template, model_name: str, default_max_tokens: int
             reason = "stop" if state["hit"] or (res.tokens and engine.is_eog(res.tokens[-1])) else "length"
             usage = {"prompt_tokens": len(prompt), "completion_tokens": len(res.tokens),
                      "total_tokens": len(prompt) + len(res.tokens)}
-            chunk("", reason, {"usage": usage, "x_relay": _relay_info(res, notes)})
+            chunk("", reason, {"usage": usage, "timings": _timings(res), "x_relay": _relay_info(res, notes)})
             send_done = self.wfile
             try:
                 send_done.write(b"data: [DONE]\n\n")
