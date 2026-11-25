@@ -81,7 +81,7 @@ def test_keep_from_request_windows():
     assert o.plain_step_s == pytest.approx(0.065, abs=1e-3)
     assert o.keep_igpu.value == pytest.approx(3 * 0.065 / 1.39, abs=0.02)
     assert o.keep_npu.value == pytest.approx(17 * 0.065 / 1.68, abs=0.02)
-    assert o.observe_window("split", 1.3, 15, n=256) is None  # tails vary: not used
+    assert o.observe_window("split", 1.3, 15, n=282) is not None  # feeds the split loss fit
 
 
 def test_lost_time_fitted_per_size():
@@ -199,3 +199,23 @@ def test_bins_correct_a_nonlinear_short_end():
         assert o.igpu_s(n, 1) == pytest.approx(t, rel=0.08), n
     line = o.igpu[(True, False)].line(1300 / 1000)
     assert o.igpu_s(1300, 1) == pytest.approx(line)  # bin never observed: the line
+
+
+def test_split_loss_learned_from_split_windows():
+    """398 tokens, measured: split TTFT 1.65 s, others lose 0.81 s; NPU 1.55 s, lose 0.48 s.
+    The composed split loss (~0.4) made split win; its own windows correct that."""
+    p = PlacementPolicy.calibrating(costs_for("llama3.2-3b"), explore_margin=0.0)
+    o = p.online
+    for _ in range(5):
+        o.observe_step(0.065, prefill_chunk=False, npu_busy=False)
+    for _ in range(15):
+        p.observe_part("npu", 397, 1.32, active=1)
+        p.observe_part("npu", 256, 1.02, active=1)
+        p.observe_part("igpu", 1, 0.23, active=1)
+        p.observe_part("igpu", 142, 0.63, active=1)
+        o.observe_window("npu", 1.55, round((1.55 - 0.48) / 0.065), n=397)
+        o.observe_window("split", 1.65, round((1.65 - 0.81) / 0.065), n=398)
+        p.observe_part("igpu", 398, 1.36, active=1)
+        o.observe_window("igpu", 1.36, round((1.36 - 1.17) / 0.065), n=398)
+    assert p.estimate("split", 398, 1).lost_decode_s == pytest.approx(0.81, rel=0.15)
+    assert p.choose(398, active=1).device == "npu"

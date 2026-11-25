@@ -130,6 +130,11 @@ class OnlineCosts:
                           for sm in (False, True)}
         self.lost_npu = {v: mk(*(c * (1 - p.keep_npu) for c in self.npu[(v, True)].coef()), NP)
                          for v in ("short", "long")}
+        # a split's loss, measured from its own windows (x = total tokens / 1000): its iGPU tail
+        # is a real prefill chunk, so it costs the others more than NPU blocks + a composed tail
+        # (measured at 398 tokens: 0.81 s vs 0.42 composed). Prior: the long NPU loss per token.
+        c0, c1 = self.lost_npu["long"].coef()
+        self.lost_split = mk(c0, c1 * 1000.0 / p.npu_block, IG)
         self._plain_step = Ema(0.0, alpha=0.1)
         self._seen: dict[tuple, int] = {}  # observations per (part, bin), for exploration
 
@@ -204,14 +209,19 @@ class OnlineCosts:
         from arrival to its first token while the others completed ``steps`` decode steps: each
         lost seconds - steps x plain step of decode time (fitted per device and size) and kept
         steps x plain step / seconds of its speed (reported). A window covers the whole
-        request, so for "npu" (``n`` = NPU tokens) it includes the 1-token iGPU tail's loss.
-        Split windows are not used (their tails vary). Returns the keep (None: no baseline
-        yet, or split)."""
-        if device not in ("igpu", "npu") or seconds <= 0:
+        request, so for "npu" (``n`` = NPU tokens) it includes the 1-token iGPU tail's loss;
+        "split" windows (``n`` = the prompt's total tokens) feed the split's own loss fit.
+        Returns the keep (None: no baseline yet)."""
+        if device not in ("igpu", "npu", "split") or seconds <= 0:
             return None
         with self._lock:
             if self._plain_step.n < 3:
                 return None
+            if device == "split":  # n = the prompt's total tokens
+                ran = min(seconds, steps * self._plain_step.value)
+                if n > 0:
+                    self.lost_split.add(n / 1000.0, seconds - ran)
+                return ran / seconds
             ran = min(seconds, steps * self._plain_step.value)
             keep = ran / seconds
             lost = seconds - ran
@@ -232,6 +242,14 @@ class OnlineCosts:
         with self._lock:
             return max(0.0, self.lost_igpu[n <= SMALL](n / 1000.0))
 
+    def split_lost_s(self, n: int, composed: float) -> float:
+        """A split's loss for an n-token prompt: its fitted line + bin correction once split
+        windows were observed, else the ``composed`` estimate."""
+        with self._lock:
+            if self.lost_split.n == 0:
+                return composed
+            return max(0.0, self.lost_split(n / 1000.0))
+
     def npu_lost_s(self, k: int) -> float:
         if k <= 0:
             return 0.0
@@ -248,6 +266,7 @@ class OnlineCosts:
                         for sm, f in self.lost_igpu.items()})
             out.update({f"lost_npu:{v}": (f.n, *map(lambda x: round(x, 4), f.coef()))
                         for v, f in self.lost_npu.items()})
+            out["lost_split"] = (self.lost_split.n, *map(lambda x: round(x, 4), self.lost_split.coef()))
             out["keep_igpu"] = (self.keep_igpu.n, round(self.keep_igpu.value, 3))
             out["keep_npu"] = (self.keep_npu.n, round(self.keep_npu.value, 3))
             out["plain_step_s"] = (self._plain_step.n, round(self._plain_step.value, 4))

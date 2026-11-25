@@ -199,8 +199,11 @@ class PlacementPolicy:
         # decode-seconds the others lose, fitted per part from measured request windows
         # an NPU window's measured loss already covers its 1-token iGPU tail; a split adds the
         # loss of the tail beyond that one token
-        if k:
-            lost = active * (o.npu_lost_s(k) + max(0.0, o.igpu_lost_s(n - k) - o.igpu_lost_s(1)))
+        if k and device == "split":
+            composed = o.npu_lost_s(k) + max(0.0, o.igpu_lost_s(n - k) - o.igpu_lost_s(1))
+            lost = active * o.split_lost_s(n, composed)
+        elif k:
+            lost = active * o.npu_lost_s(k)
         else:
             lost = active * o.igpu_lost_s(n)
         dev = device if not (device == "npu" and k == 0) else "igpu"
