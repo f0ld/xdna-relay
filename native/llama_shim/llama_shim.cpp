@@ -94,6 +94,17 @@ void rl_free(void * p) {
 
 int rl_n_vocab(void * p) { return static_cast<Handle *>(p)->n_vocab; }
 
+// 0 = attention only (KV truncates freely), 1 = recurrent, 2 = hybrid (recurrent + attention):
+// recurrent state rolls back only within the n_rs_seq snapshots of the last ubatch.
+int rl_model_kind(void * p) {
+    auto * h = static_cast<Handle *>(p);
+    if (llama_model_is_hybrid(h->model))    return 2;
+    if (llama_model_is_recurrent(h->model)) return 1;
+    return 0;
+}
+
+int rl_n_rs_seq(void * p) { return (int) llama_n_rs_seq(static_cast<Handle *>(p)->ctx); }
+
 int rl_tokenize(void * p, const char * text, int len, int * out, int max, int add_special, int parse_special) {
     auto * h = static_cast<Handle *>(p);
     return llama_tokenize(h->vocab, text, len, out, max, add_special != 0, parse_special != 0);

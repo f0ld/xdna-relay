@@ -27,6 +27,7 @@ class Snapshot:
     model: str  # executor name; restore only into the same model
     tokens: tuple[int, ...]
     data: np.ndarray  # opaque bytes (uint8)
+    exact: bool = False  # recurrent state: usable only as a whole prefix (cannot truncate)
 
     @property
     def nbytes(self) -> int:

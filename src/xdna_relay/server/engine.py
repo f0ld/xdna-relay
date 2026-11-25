@@ -106,7 +106,10 @@ class Engine:
         self.shared = self.dshared = self.spec = None
         if self.batched:
             from xdna_relay.backends.igpu.llama_multi import SharedLlamaContext
-            self.shared = SharedLlamaContext(gguf, n_seq=slots, n_ctx=n_ctx * slots)
+            # hybrid models: recurrent-state snapshots to reject up to k_max drafts (ignored by
+            # llama.cpp for architectures without recurrent rollback)
+            self.shared = SharedLlamaContext(gguf, n_seq=slots, n_ctx=n_ctx * slots,
+                                             n_rs_seq=BatchK.k_max if draft_gguf else 0)
             if draft_gguf:
                 # the draft's batches are uneven every round (catch-up of 1 or 2 tokens, chunks):
                 # one KV buffer, so llama.cpp runs them in one pass (T-041)
@@ -114,6 +117,8 @@ class Engine:
                 if self.dshared.n_vocab != self.shared.n_vocab:
                     raise ValueError(f"draft vocabulary {self.dshared.n_vocab} != target {self.shared.n_vocab}")
                 self.spec = BatchK(fixed=spec_k, split_ragged=True)
+                if self.shared.rollback is not None:
+                    self.spec.k_max = min(self.spec.k_max, self.shared.rollback)
             self.slots = [Slot(i, self.shared.seqs[i], self.dshared.seqs[i] if self.dshared else None)
                           for i in range(slots)]
         else:
@@ -185,8 +190,11 @@ class Engine:
         with self._cv:
             active = sum(1 for s in self.slots if s is not slot and s.phase == "decode")
         limit = len(prompt) - 1
-        reuse = min(max(common_prefix(slot.target.held, prompt),
-                        self.cache.peek(slot.target.name, prompt)), limit)
+        exact = getattr(slot.target, "rollback", None) is not None
+        live = common_prefix(slot.target.held, prompt)
+        if exact and live < len(slot.target.held):
+            live = 0
+        reuse = min(max(live, self.cache.peek(slot.target.name, prompt, exact=exact)), limit)
         n_igpu = len(prompt) - reuse
         n_npu = 0
         if self.npu is not None:
@@ -381,6 +389,7 @@ class Engine:
                         if e.pending:
                             continue
                         e.t_first = now
+                        self._snapshot_prompt(e)
                     t = r[0]
                     e.last = t
                     e.remaining -= 1
@@ -393,6 +402,16 @@ class Engine:
                         if e in self._decoding:
                             self._decoding.remove(e)
                         e.out.put(None)
+
+    def _snapshot_prompt(self, e: _Decoding) -> None:
+        """Hybrid targets cannot truncate back to the prompt later; a next chat turn extends
+        the prompt (its history may rewrite this answer), so keep a snapshot of it now
+        (~40 ms for the 35B-A3B; the target holds exactly the prompt here)."""
+        if getattr(e.slot.target, "rollback", None) is None:
+            return
+        snap = e.slot.target.snapshot()
+        if len(snap.tokens) >= self.cache.min_tokens:
+            self.cache.put(snap)
 
     def _sweep_spec_costs(self, reps: int = 3) -> None:
         """Seed ``BatchK`` with measured batch costs of both models. Costs are not smooth in
@@ -504,6 +523,7 @@ class Engine:
             if not job.pending:
                 t = out[-1][0]
                 job.t_first = time.perf_counter()
+                self._snapshot_prompt(job)
                 job.seq.append(t)
                 job.remaining -= 1
                 job.out.put(t)

@@ -29,3 +29,5 @@ LLAMA32_1B_BF16 = Path.home() / ".cache/xdna-relay/gguf/Llama-3.2-1B-Instruct-BF
 LLAMA32_1B_Q4 = Path.home() / ".local/share/contio-spike/gguf/Llama-3.2-1B-Instruct-Q4_K_M.gguf"
 QWEN3_06B_HF = Path.home() / ".cache/xdna-relay/hf/Qwen3-0.6B"
 QWEN3_8B_HF = Path.home() / ".cache/xdna-relay/hf/Qwen3-8B"
+QWEN36_35B_A3B_Q4 = Path.home() / ".local/share/contio-spike/gguf/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+QWEN36_35B_A3B_MTP_Q4 = Path.home() / ".local/share/contio-spike/gguf/Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf"

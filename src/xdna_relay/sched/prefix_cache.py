@@ -49,24 +49,37 @@ class PrefixCache:
     def __len__(self) -> int:
         return len(self._entries)
 
-    def best(self, model: str, prompt: list[int]) -> tuple[Snapshot | None, int]:
-        """The snapshot of ``model`` sharing the longest prefix with ``prompt``, and that length."""
+    @staticmethod
+    def _usable(snap: Snapshot, prompt: list[int], exact: bool, limit: int | None) -> int:
+        """Prompt tokens the snapshot provides: its common prefix with the prompt; with
+        ``exact`` (recurrent state, cannot truncate) all its tokens or nothing."""
+        if exact:
+            n = len(snap.tokens)
+            ok = n <= len(prompt) and (limit is None or n <= limit) and tuple(prompt[:n]) == snap.tokens
+            return n if ok else 0
+        n = common_prefix(snap.tokens, prompt)
+        return n if limit is None else min(n, limit)
+
+    def best(self, model: str, prompt: list[int], exact: bool = False,
+             limit: int | None = None) -> tuple[Snapshot | None, int]:
+        """The snapshot of ``model`` providing the longest prefix of ``prompt``, and that
+        length (``exact``: only snapshots that are a whole prefix, at most ``limit`` tokens)."""
         with self._lock:
             best, best_n = None, 0
             for (m, _), snap in self._entries.items():
                 if m != model:
                     continue
-                n = common_prefix(snap.tokens, prompt)
+                n = self._usable(snap, prompt, exact, limit)
                 if n > best_n:
                     best, best_n = snap, n
             if best is not None:
                 self._entries.move_to_end((model, best.tokens))
             return best, best_n
 
-    def peek(self, model: str, prompt: list[int]) -> int:
+    def peek(self, model: str, prompt: list[int], exact: bool = False) -> int:
         """Length of the longest cached prefix of ``prompt`` (no LRU update)."""
         with self._lock:
-            return max((common_prefix(s.tokens, prompt) for (m, _), s in self._entries.items()
+            return max((self._usable(s, prompt, exact, None) for (m, _), s in self._entries.items()
                         if m == model), default=0)
 
     def put(self, snap: Snapshot) -> None:
@@ -80,9 +93,11 @@ class PrefixCache:
         old = self._entries.pop(key, None)
         if old is not None:
             self.bytes -= old.nbytes
-        # an entry that is a strict prefix of the new one is redundant (the new one truncates)
-        for k in [k for k in self._entries if k[0] == snap.model and snap.tokens[:len(k[1])] == k[1]]:
-            self.bytes -= self._entries.pop(k).nbytes
+        # an entry that is a strict prefix of the new one is redundant (the new one truncates),
+        # unless the new one cannot truncate (recurrent state): then both stay
+        if not snap.exact:
+            for k in [k for k in self._entries if k[0] == snap.model and snap.tokens[:len(k[1])] == k[1]]:
+                self.bytes -= self._entries.pop(k).nbytes
         self._entries[key] = snap
         self.bytes += snap.nbytes
         while self.bytes > self.max_bytes:
@@ -96,8 +111,12 @@ def prepare(ex: Executor, prompt: list[int], cache: PrefixCache | None = None) -
     caller evaluates ``prompt[n:]``."""
     info = PrefillInfo()
     limit = len(prompt) - 1
+    # recurrent state (hybrid models) cannot truncate: reuse only exact prefixes
+    exact = getattr(ex, "rollback", None) is not None
     live = min(common_prefix(ex.held, prompt), limit)
-    snap, n_snap = (cache.best(ex.name, prompt) if cache else (None, 0))
+    if exact and live < len(ex.held):
+        live = 0
+    snap, n_snap = (cache.best(ex.name, prompt, exact=exact, limit=limit) if cache else (None, 0))
     n_snap = min(n_snap, limit)
     t = time.perf_counter()
     keep = live

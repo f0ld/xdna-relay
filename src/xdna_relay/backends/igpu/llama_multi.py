@@ -40,6 +40,8 @@ def _bind(lib) -> None:
         "rl_argmax_at": (I, [P, I, IP, IP, FP]),
         "rl_seq_truncate": (I, [P, I, I]),
         "rl_seq_pos_max": (I, [P, I]),
+        "rl_model_kind": (I, [P]),
+        "rl_n_rs_seq": (I, [P]),
         "rl_state_seq_size": (C.c_size_t, [P, I]),
         "rl_state_seq_get": (C.c_size_t, [P, I, C.c_void_p, C.c_size_t]),
         "rl_state_seq_set": (C.c_size_t, [P, I, C.c_void_p, C.c_size_t]),
@@ -56,10 +58,10 @@ class SharedLlamaContext:
 
     def __init__(self, gguf: str, *, n_seq: int, n_ctx: int = 16384, n_batch: int = 512,
                  n_gpu_layers: int = -1, flash_attn: int = 1, name: str | None = None,
-                 kv_unified: bool = False):
+                 kv_unified: bool = False, n_rs_seq: int = 0):
         self._l = _lib()
         _bind(self._l)
-        self._h = self._l.rl_load_multi(str(gguf).encode(), n_gpu_layers, n_ctx, n_batch, 0, flash_attn,
+        self._h = self._l.rl_load_multi(str(gguf).encode(), n_gpu_layers, n_ctx, n_batch, n_rs_seq, flash_attn,
                                         n_seq, 1 if kv_unified else 0)
         if not self._h:
             raise RuntimeError(f"llama.cpp could not load {gguf}")
@@ -68,6 +70,10 @@ class SharedLlamaContext:
         # each sequence's context: all of it shared (unified KV), else its own n_ctx / n_seq
         self.n_ctx_seq = n_ctx if kv_unified else n_ctx // n_seq
         self.n_vocab = self._l.rl_n_vocab(self._h)
+        # recurrent state (kind 1 recurrent, 2 hybrid) rolls back at most ``rollback`` tokens,
+        # within the last batch; attention-only models truncate anywhere
+        self.kind = self._l.rl_model_kind(self._h)
+        self.rollback = self._l.rl_n_rs_seq(self._h) if self.kind else None
         self.lock = threading.RLock()
         self.decodes = 0  # llama_decode calls; a row readout is valid until the next one
         self._tok = (C.c_int * n_batch)()
@@ -191,6 +197,7 @@ class LlamaSeqExecutor(Executor):
         self.n_vocab = ctx.n_vocab
         self.n_batch = ctx.n_batch
         self.n_ctx = ctx.n_ctx_seq
+        self.rollback = ctx.rollback  # None: truncates anywhere; else at most this many tokens
         self.kv_streams = 1 if ctx.n_ctx_seq == ctx.n_ctx else ctx.n_seq  # streams in its state
         self.n_past = 0
         self.held: list[int] = []
@@ -256,7 +263,7 @@ class LlamaSeqExecutor(Executor):
             got = c._l.rl_state_seq_get(c._h, self.seq, buf.ctypes.data, size)
         if got != size:
             raise RuntimeError(f"state copy returned {got} of {size} bytes")
-        return Snapshot(self.name, tuple(self.held), buf)
+        return Snapshot(self.name, tuple(self.held), buf, exact=self.rollback is not None)
 
     def restore(self, snap: Snapshot) -> None:
         if snap.model != self.name:
