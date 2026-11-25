@@ -6,7 +6,7 @@ Status values: `TODO`, `IN PROGRESS`, `REVIEW`, `DONE`, `BLOCKED` (see PROTOCOL.
 
 - Since 2026-11-24 the Architect implements directly (Implementer paused, ADR 0006). Tasks
   keep a done-command and tests; review files are written only for larger milestones.
-- Active task: **T-038** validate online calibration on hardware (wrong prior -> converges); then 3B/Llama batched presets come for free from calibration
+- Active task: next — keep_iGPU from decoders' token timestamps (step times miss GIL/request-handling stalls); Python request handling off the stepper's GIL
 - Power: the machine runs platform profile `low-power` (fan noise); NPU may run FLM
   `--pmode performance`. Every bench row records the profile.
 - Operator TODOs: see `docs/knowledge/environment.md` → "Operator TODOs" (driver timeout).
@@ -48,7 +48,7 @@ Own pieces, each an A/B against the IRON graph it replaces (Operator, 2026-11-24
 ## MS — Speculative decoding across devices
 
 - T-025 — Draft on NPU, verify on iGPU — Status: DONE (negative, ADR 0007: ~0–10% at best; FLM unusable as draft)
-- T-038 — Online calibration of the placement cost model (`sched/online.py`: per-part ridge/forgetting line fits seeded by the preset; decode keep from stepper step times; server default, `--no-calibrate`, `GET /x_relay/calibration`) — Status: IN PROGRESS (`scripts/test.sh T-038` 6/6 incl. engine feed; open: convergence on real traffic — run the server with a deliberately wrong preset and watch decisions converge)
+- T-038 — Online calibration of the placement cost model (`sched/online.py`: per-part ridge/forgetting line fits seeded by the preset; decode keep from stepper step times; server default, `--no-calibrate`, `GET /x_relay/calibration`) — Status: DONE (`scripts/test.sh T-038` 8/8; hardware: from a wrong prior (Llama 3B preset on Qwen3-8B) estimates within ±11% for ≥279 tokens after ~12 requests, decisions match the measured best except a near-tie at 398 tokens; bench/results/2026-11-25-calibration.md)
 - T-037 — Placement presets recalibrated for the batched engine (`qwen3-8b-packed-batched`, auto-selected) — Status: DONE (`scripts/test.sh T-032` 29/29; fits within 4%; split validated at 282 tokens: lowest TTFT + A loss, A done first)
 - T-036 — Mixed batches: iGPU prefill chunks ride along with decode tokens (stepper does all shared-context work) — Status: DONE (`scripts/test.sh T-034/T-035` pass; chunk 64–512 only trades A's speed during prefill vs B's TTFT, totals get worse below 256; default 256)
 - T-035 — Batched decode across slots (one llama.cpp context, n sequences, stepper thread) — Status: DONE (`scripts/test.sh T-035` 5/5, T-034 10/10; 2 clients 30 vs 16 tok/s total, 4: 56 vs 16; with NPU prefill A keeps 10 vs 0.9 tok/s during B's prefill; bench/results/2026-11-25-batched-decode.md)

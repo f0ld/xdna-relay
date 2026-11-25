@@ -1,0 +1,39 @@
+# T-038: online calibration of placement costs, validated on hardware (2026-11-25)
+
+`bench/calibration_run.py`, 32 rounds: A streams 120 tokens; B (82–1718 tokens, cycled)
+arrives 0.5 s after A's first token. Server: Qwen3-8B, batched (chunk 256), NPU packed,
+`--placement auto`, started with a **deliberately wrong prior** (`--preset llama3.2-3b`: iGPU
+~1.8x and NPU ~1.3x/block faster than this pair). Platform `balanced`, on AC, NPU pmode
+`performance`; no NPU TDR in either run. A alone ~15.5 tok/s.
+
+## Run 1 (first calibrator): converged, but to some wrong decisions
+Estimates went from −53/−57% to within ±12% after ~4 rounds; decisions: 279 and 398 tokens
+iGPU (measured best: split / NPU), 968–1718 split. Two model errors visible in the fits:
+- one iGPU line for all sizes: its intercept (0.37 s, from long prefills) was charged to the
+  1-token / small tail every NPU or split option leaves the iGPU (really ~1 decode step);
+- the prior had one NPU curve, so the calibrator kept one NPU fit, mixing the server's short
+  (≤640 rows, streamed B) and long (resident B) prompt versions.
+Fix: own fit for iGPU parts ≤ 64 tokens; NPU fits always split at 640 rows.
+
+## Run 2 (fixed calibrator)
+| round(s) | B tokens | choice | est vs measured TTFT | A tok/s during B |
+|---|---|---|---|---|
+| 0–4 | 82–1717 | mixed | +3 … −53% | |
+| 12–31 | 82–83 | iGPU | +38 … +63% (0.15–0.2 s) | 4.7–4.8 |
+| 13–29 | 138–139 | iGPU | +6 … +25% | 3.0–4.3 |
+| 15–31 | 279 | split 256+23 | −8 … −11% | 9.5–10.5 |
+| 19–27 | 398 | iGPU | −1 … 0% | 2.2 |
+| 12–28 | 967–968 | NPU | 0 … +1% | 10.3–10.4 |
+| 14–30 | 1327–1328 | split 1280+48 | −1 … −2% | 9.4–9.7 |
+| 18–26 | 1717–1718 | NPU | +6 … +8% | 9.7–10.1 |
+Final fits: iGPU bulk (decoding) 0.375 s + 2.49 ms/token; iGPU small tails 0.226 s + 1.21
+ms/token; NPU short 0.346 s + 0.643 s/block, long 0.167 s + 0.653 s/block (incl. handoff);
+keep iGPU 0.29, keep NPU 0.70; plain decode step 64 ms.
+
+Against the best measured placements (2026-11-25-batched-decode.md): 82/139 iGPU ✓, 279 split
+✓, 968 NPU ✓, 1718 NPU ✓; **398 iGPU ✗** (measured NPU: TTFT 1.68 s with A at 10.1 vs iGPU
+1.39 s with A at 2.2; TTFT + A lost 2.28 vs ~2.58). A near-tie (~4% in the model) decided by
+keep_iGPU: from step times 0.29, from the client 2.2/15.5 = 0.14. The step-time estimate
+misses what A loses outside the stepper's steps (B's request handling in Python: template,
+tokenize, prepare, all under the GIL with the stepper). Open: measure keep from decoders'
+token timestamps instead of step times.
