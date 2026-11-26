@@ -333,6 +333,13 @@ class Engine:
             n_dev = {"npu": res.npu_tokens, "split": len(prompt)}.get(choice.device, info.evaluated)
             res.keep_observed = self.policy.online.observe_window(choice.device, res.ttft_s, steps, n_dev)
 
+    def _chunk(self, n_decoding: int) -> int:
+        """Prompt tokens for this step's prefill part. With sequences decoding,
+        ``prefill_chunk`` bounds their stall; alone, a prompt takes the whole ``n_batch``
+        (one ubatch): MoE expert GEMMs need many tokens per expert (35B-A3B pp2048:
+        256 -> 394, 512 -> 481 tok/s; bench/results/2026-11-26-moe-profile.md)."""
+        return self.prefill_chunk if n_decoding else max(self.prefill_chunk, self.shared.n_batch)
+
     def _stepper(self) -> None:
         """Each step, one llama_decode: every decoding sequence's next token, plus the next
         chunk (``prefill_chunk`` tokens) of the oldest request still prefilling."""
@@ -367,7 +374,7 @@ class Engine:
             parts, owners = [(e.slot.target, [e.last], True) for e in dec], list(dec)
             if pre:
                 job = pre[0]
-                budget = min(self.prefill_chunk, self.shared.n_batch - len(dec), self._chunk_cut(job))
+                budget = min(self._chunk(len(dec)), self.shared.n_batch - len(dec), self._chunk_cut(job))
                 chunk = job.pending[:budget]
                 parts.append((job.slot.target, chunk, len(chunk) == len(job.pending)))
                 owners.append(job)
@@ -505,7 +512,7 @@ class Engine:
                 dpre.append((e.slot.draft, t, True))
                 room -= len(t)
         missing = [len(e.seq) - e.slot.draft.n_past for e in drafting]
-        chunk_n = min(self.prefill_chunk, len(job.pending)) if job is not None else 0
+        chunk_n = min(self._chunk(len(dec)), len(job.pending)) if job is not None else 0
         ks = self.spec.choose([e.acc for e in drafting], missing, n_plain=len(lagging),
                               extra_draft=sum(len(t) for _, t, _ in dpre), extra_verify=chunk_n)
         ks = [max(0, min(k, e.remaining - 1)) for k, e in zip(ks, drafting)]
@@ -532,7 +539,7 @@ class Engine:
         """A speculative round with the target's MTP head as drafter: no draft context to
         catch up (the MTP state follows every target batch), one batched MTP step per draft
         position."""
-        chunk_n = min(self.prefill_chunk, len(job.pending)) if job is not None else 0
+        chunk_n = min(self._chunk(len(dec)), len(job.pending)) if job is not None else 0
         ks = self.spec.choose([e.acc for e in dec], [1] * len(dec), extra_verify=chunk_n)
         ks = [max(0, min(k, e.remaining - 1)) for k, e in zip(ks, dec)]
         npu_busy = self._npu_lock.locked()
@@ -558,7 +565,7 @@ class Engine:
         n_verify = sum(len(t) for _, t, _ in vparts)
         chunk = []
         if job is not None:
-            chunk = job.pending[:min(self.prefill_chunk, self.shared.n_batch - n_verify, self._chunk_cut(job))]
+            chunk = job.pending[:min(self._chunk(len(dec)), self.shared.n_batch - n_verify, self._chunk_cut(job))]
             if chunk:
                 vparts.append((job.slot.target, chunk, len(chunk) == len(job.pending)))
         out = self.shared.step(vparts)

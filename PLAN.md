@@ -8,7 +8,7 @@ Status values: `TODO`, `IN PROGRESS`, `REVIEW`, `DONE`, `BLOCKED` (see PROTOCOL.
   keep a done-command and tests; review files are written only for larger milestones.
 - Main target since 2026-11-25: Qwen3.6-35B-A3B (ADR 0008), milestone MQ below. The Qwen3-8B
   path is paused with a resume guide: `docs/knowledge/qwen3-8b-path.md`.
-- Active task: T-044
+- Active task: T-046 (gate 1 of the IRON plan, `docs/knowledge/qwen35moe-iron-plan.md`)
 - Power: the machine runs platform profile `low-power` (fan noise); NPU may run FLM
   `--pmode performance`. Every bench row records the profile.
 - Operator TODOs: see `docs/knowledge/environment.md` → "Operator TODOs" (driver timeout).
@@ -20,10 +20,20 @@ Baseline (2026-11-25-moe-35b-a3b.md): iGPU decode 20.9 tok/s, prefill 471 tok/s,
 - T-042 — Hybrid-state rollback: recurrent (linear-attention) state checkpoints in the shim;
   executor capability used by speculative verify and the prefix cache — Status: DONE (`scripts/test.sh T-042` 11/11; rollback ≤8 tokens costs 2–4% decode; snapshots 69–102 MiB, ~20 ms)
 - T-043 — MTP drafting through the shim (llama.cpp draft-mtp) under BatchK; batched — Status: DONE (`scripts/test.sh T-043` 9/9; 1 request 20 → 26–32 tok/s, 2 requests +17%; server `--mtp`, chat template from the GGUF)
-- T-044 — Engine/server on the 35B-A3B (batched, prefix cache with checkpoints, calibration) — Status: TODO
-- T-045 — IRON path: op inventory of qwen35moe (gated linear attention, MoE experts, full
-  attention layers), what IRON has, what needs kernels; plan of the graph — Status: TODO
-- T-046.. — IRON graph pieces, handoff of KV + recurrent state, placement — Status: TODO
+- T-044 — Engine/server on the 35B-A3B: `reasoning_content` split (llama-server deepseek format), MTP state in sequence snapshots, solo prefill takes the whole n_batch — Status: DONE (`scripts/test.sh T-044` 16/16; warm drafts = cold (was −6%); 2k-token TTFT 339 → 420 tok/s; bench/results/2026-11-26-moe-profile.md)
+- T-045 — IRON path: op inventory of qwen35moe, iGPU per-op profile, IRON coverage, graph
+  plan with go/no-go gates — Status: DONE (`docs/knowledge/qwen35moe-iron-plan.md`)
+- T-046 — ExpertFFN IRON operator (grouped bfp16 GEMM over per-expert rows, SiLU-GLU,
+  weighted scatter-add) + microbench; gate 1: 40 layers ≥ 1.5× faster than the iGPU's experts
+  at T=2048 — Status: TODO
+- T-047 — GatedDeltaRule IRON operator (fp32 state, sliced like SelectiveScan) + microbench;
+  gate 2: ≤ 0.3 ms/token for 30 layers — Status: TODO
+- T-048 — Qwen35Moe graph on `iron.lm`, GGUF → bfp16 weight cache, hidden-state check vs
+  llama.cpp — Status: TODO
+- T-049 — Hybrid handoff blob (KV + conv + S state), target-only restore with MTP — Status: TODO
+- T-050 — Placement for the 35B: NPU prefill for long prompts, iGPU decode + MTP; TTFT bench
+  2k/8k/16k — Status: TODO
+- iGPU side (fork patch, any time): in-place GDN state (~8% of decode) — Status: TODO
 
 ## Done (foundation)
 

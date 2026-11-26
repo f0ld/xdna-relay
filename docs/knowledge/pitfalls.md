@@ -160,3 +160,10 @@ parent now closes it after `start()` and raises "NPU worker exited".
   output checks; keep the explicit truncate (MTP state and bookkeeping depend on it).
 - Hybrid prompt snapshots: one token must still be evaluated for logits, so a snapshot of the
   whole prompt is useless for the same prompt; snapshot prompt[:-1].
+- Prefix-cache benchmarks need prompts of at least `PrefixCache.min_tokens` (64): shorter
+  prompts are never stored, every "warm" run is cold (`reused 0` in the result).
+- With MTP the shim's sequence-state blob is [target][MTP state][pending hidden]
+  (`rl_state_seq_get`): a blob from a context without MTP (or a hand-written handoff blob)
+  is refused (returns 0) by an MTP context until a target-only restore exists (T-049).
+- MoE prefill efficiency depends on tokens per expert: pp2048 on the 35B-A3B is 394 tok/s at
+  ubatch 256 vs 481 at 512 (iGPU). Don't shrink prefill chunks for a prompt that runs alone.

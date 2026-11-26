@@ -39,3 +39,12 @@ while B prefills on the NPU; batched spec throughput +78/+30/+9% at 1/2/4 reques
 3. Intermittent half-speed plain decode at 4 requests (bench rows now record GPU clock and
    other GPU clients: `bench/gpu_watch.py`).
 4. Placement decode weight at near-ties (~279 tokens: iGPU vs split).
+
+## Changes made on the 35B track that also affect the 8B (keep in mind when resuming)
+- T-044: a prompt prefilling while nothing decodes takes the whole n_batch (512) per step
+  instead of `--prefill-chunk` (`Engine._chunk`); with sequences decoding the chunk is
+  unchanged. 8B suites T-035/T-041 pass with it; the 8B's solo-prefill calibration (TTFT fits)
+  re-learns online, a stored calibration from before may overestimate iGPU TTFT at first.
+- T-044: the server splits `<think>` text into `reasoning_content` (`--reasoning-format none`
+  restores the raw text); Qwen3-8B's template opens no `<think>` in the prompt, its replies
+  start with `<think>` and are split the same way.

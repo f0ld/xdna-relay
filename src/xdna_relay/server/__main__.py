@@ -46,6 +46,8 @@ def main(argv=None):
     ap.add_argument("--name", help="model id reported by /v1/models")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8090)
+    ap.add_argument("--reasoning-format", choices=["deepseek", "none"], default="deepseek",
+                    help="deepseek: <think> text in reasoning_content (as llama-server); none: raw content")
     ap.add_argument("--max-tokens", type=int, default=256,
                     help="tokens per request when the request gives no max_tokens (thinking: ~4096)")
     a = ap.parse_args(argv)
@@ -86,7 +88,8 @@ def main(argv=None):
             ap.error("no chat template in the GGUF: give --hf or --chat-template")
         tpl = ChatTemplate(source, defaults=defaults)
     name = a.name or engine.model
-    httpd = serve(engine, tpl, name, a.host, a.port, default_max_tokens=a.max_tokens)
+    httpd = serve(engine, tpl, name, a.host, a.port, default_max_tokens=a.max_tokens,
+                  reasoning_format=a.reasoning_format)
     print(f"xdna-relay serving {name} on http://{a.host}:{a.port} ({a.slots} slots, "
           f"{'batched' if engine.batched else 'unbatched'}"
           f"{', NPU prefill' if a.npu else ''}{', draft ' + a.draft if a.draft else ''}"

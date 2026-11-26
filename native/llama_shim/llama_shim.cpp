@@ -517,19 +517,80 @@ int rl_seq_pos_max(void * p, int seq) {
     return llama_memory_seq_pos_max(llama_get_memory(static_cast<Handle *>(p)->ctx), seq);
 }
 
+// Sequence state. With MTP the blob also carries the MTP context's sequence state and the
+// pending hidden state, so a restored sequence drafts as well as a live one:
+//   [u64 target size][target state][u64 mtp size][mtp state][n_embd floats pending]
+static size_t mtp_tail_size(Handle * h, int seq, size_t * mtp_size) {
+    *mtp_size = llama_state_seq_get_size(h->mtp->ctx, seq);
+    return 8 + *mtp_size + (size_t) h->mtp->n_embd * sizeof(float);
+}
+
 size_t rl_state_seq_size(void * p, int seq) {
-    return llama_state_seq_get_size(static_cast<Handle *>(p)->ctx, seq);
+    auto * h = static_cast<Handle *>(p);
+    const size_t t = llama_state_seq_get_size(h->ctx, seq);
+    if (!h->mtp) {
+        return t;
+    }
+    size_t ms = 0;
+    return 8 + t + mtp_tail_size(h, seq, &ms);
 }
 
 size_t rl_state_seq_get(void * p, int seq, uint8_t * dst, size_t size) {
-    return llama_state_seq_get_data(static_cast<Handle *>(p)->ctx, dst, size, seq);
+    auto * h = static_cast<Handle *>(p);
+    if (!h->mtp) {
+        return llama_state_seq_get_data(h->ctx, dst, size, seq);
+    }
+    const uint64_t t = llama_state_seq_get_size(h->ctx, seq);
+    size_t ms = 0;
+    const size_t tail = mtp_tail_size(h, seq, &ms);
+    if (size < 8 + t + tail) {
+        return 0;
+    }
+    std::memcpy(dst, &t, 8);
+    if (llama_state_seq_get_data(h->ctx, dst + 8, t, seq) != t) {
+        return 0;
+    }
+    uint8_t * q = dst + 8 + t;
+    const uint64_t m64 = ms;
+    std::memcpy(q, &m64, 8);
+    if (llama_state_seq_get_data(h->mtp->ctx, q + 8, ms, seq) != ms) {
+        return 0;
+    }
+    std::memcpy(q + 8 + ms, h->mtp->pending[seq].data(), (size_t) h->mtp->n_embd * sizeof(float));
+    return 8 + t + tail;
 }
 
 size_t rl_state_seq_set(void * p, int seq, const uint8_t * src, size_t size) {
     auto * h = static_cast<Handle *>(p);
     llama_memory_seq_rm(llama_get_memory(h->ctx), seq, -1, -1);
-    mtp_truncate(h, seq, 0);  // restored sequences start without MTP context (TODO: snapshot it)
-    return llama_state_seq_set_data(h->ctx, src, size, seq);
+    if (!h->mtp) {
+        return llama_state_seq_set_data(h->ctx, src, size, seq);
+    }
+    mtp_truncate(h, seq, 0);
+    Mtp * m = h->mtp;
+    const size_t E = (size_t) m->n_embd * sizeof(float);
+    uint64_t t = 0, ms = 0;
+    if (size < 16 + E) {
+        return 0;
+    }
+    std::memcpy(&t, src, 8);
+    if (16 + t + E > size) {
+        return 0;
+    }
+    std::memcpy(&ms, src + 8 + t, 8);
+    if (16 + t + ms + E != size) {
+        return 0;
+    }
+    if (llama_state_seq_set_data(h->ctx, src + 8, t, seq) != t) {
+        return 0;
+    }
+    if (llama_state_seq_set_data(m->ctx, src + 16 + t, ms, seq) != ms) {
+        llama_memory_seq_rm(llama_get_memory(h->ctx), seq, -1, -1);
+        return 0;
+    }
+    std::memcpy(m->pending[seq].data(), src + 16 + t + ms, E);
+    m->verify_rows[seq] = 0;  // no rollback into the restored prefix
+    return size;
 }
 
 }  // extern "C"
