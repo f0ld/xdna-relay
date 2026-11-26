@@ -70,6 +70,21 @@ int main(int argc, char ** argv) {
         for (int i = 0; i < 6; ++i) printf(" e%d=%d", idx[i], cnt[idx[i]]);
         printf("; row0:"); for (int j = 0; j < k; ++j) printf(" %d", v[j]); printf("\n");
     }
+    if (const char * dump = getenv("MOE_DUMP")) {  // per-layer counts of the first window
+        FILE * fo = fopen(dump, "w");
+        for (int T : {1024, 2048, 4096, 8192}) {
+            if (T > ntok) break;
+            for (auto & [il, v] : cap.sel) {
+                if (v.size() < (size_t) ntok * k) continue;
+                std::vector<int> cnt(256, 0);
+                for (int t = 0; t < T; ++t) for (int j = 0; j < k; ++j) cnt[v[(size_t) t * k + j]]++;
+                fprintf(fo, "%d,%d", T, il);
+                for (int c : cnt) fprintf(fo, ",%d", c);
+                fprintf(fo, "\n");
+            }
+        }
+        fclose(fo);
+    }
     // the largest count outside the top H experts (what the tail's capacity must hold)
     printf("T,H,mean_rest_max,worst_rest_max,frac_rest_over_128,frac_rest_over_256,top_H_rows_mean\n");
     for (int T : {1024, 2048, 4096}) {

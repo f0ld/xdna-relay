@@ -58,3 +58,41 @@ Heavy-tailed: the top 8 experts take ~30% of a layer's rows; nearly all experts 
 - iGPU observation: its expert GEMMs run at ~2 TFLOPS vs 6.5 for dense GEMMs; with the
   routing this skewed (hot experts with ~1000 rows of 2048), a MoE kernel that runs hot
   experts as dense GEMMs could gain on the iGPU directly.
+
+## 4. Experiment A: each expert gets the units its tokens need (unit -> expert table)
+`GroupedGEMM(unit_groups=...)`: one B shim transfer per unit per column, each at its
+expert's weights (`_split_blocks`: A fills, arming, C drains, then the B fills, so a full B
+lane queue never stands ahead of what the cores need). Correct for repeated, skipped and
+reordered experts (`scripts/test.sh T-046`, 9/9). Tables from real routing
+(`MOE_DUMP=bench/results/moe_counts_code.csv bench/native/moe_routing`, layer 13 of the code
+text; units of 128 rows, 2 core rows, tile_n 128):
+
+| T | units | gate/up | down | per layer |
+|---|---|---|---|---|
+| 2048 | 306 | 19.35 ms | 11.22 ms | 30.6 ms |
+| 4096 | 420 (gate/up as 2 calls of 210) | 25.62 | 15.25 | 40.9 |
+
+~61-63 us (gate/up) + ~36 us (down) per unit, the same as the uniform layout: thousands of B
+transfers per call cost the command processor nothing measurable.
+
+NPU timeouts (TDR, 10:55 and 10:56): gate/up with 418 units (836 B ring passes per column
+block) and 420 units (560 passes) in ONE call. 306 units (408 passes) ran. Not retried
+further; `GroupedGEMM` refuses a table over 512 passes (`MAX_TABLE_PASSES`, 2 queue pushes of
+256; cause UNVERIFIED: likely the 3rd memtile push waits on the 1st, whose B fills come
+after it in `_split_blocks`) and the probe splits larger tables (`max_units`: 384 at K=2048).
+
+40-layer projection from every layer's real unit count (per unit 97 us + SiLU*up ~7.5 us
+estimated + 0.6 ms per call):
+
+| T | mean units | NPU experts | iGPU experts | speedup |
+|---|---|---|---|---|
+| 1024 | 227 | 1.00 s | 0.95 s | 0.95x |
+| 2048 | 303 | 1.32 s | 1.90 s | 1.45x |
+| 4096 | 418 | 1.82 s | 3.81 s | 2.09x |
+| 8192 | 659 | 2.84 s | 7.62 s | 2.69x |
+
+Gate 1 (>= 1.5x at T=2048): 1.45x, a marginal miss at 2k; passes from ~2.2k tokens on, 2.1x
+at 4k, 2.7x at 8k. Still open for production: the table is static here (a rebuild per
+routing, ~5 s); a per-call table needs one per-call offset word per unit
+(`offset_parameter` takes a single `Value`; UNVERIFIED whether a `per_call(count=...)`
+vector element can be one).

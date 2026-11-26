@@ -22,6 +22,9 @@ from iron.operators.flm.gemm.op import ProjectionGEMM
 from iron.tune.measure import Standalone, pmode
 
 H, F = 2048, 512  # hidden, expert FFN width
+# units padded to a multiple of 6: even (2 core rows) and a multiple of the 3 B slots, so the
+# memtile ring keeps 3 slots (418 units: ring 2, 836 passes, NPU timeout 2026-11-26)
+PAD_UNITS = 6
 
 
 from xdna_relay.backends.npu.grouped_gemm import patch_standalone_bfp
@@ -74,6 +77,45 @@ def run_grouped(groups: int, runs: int, kinds: str, tile_n=None, core_rows=4):
     return build, statistics.median(ts), min(ts)
 
 
+def table_from_counts(path, T, layer, unit=128):
+    """Unit -> expert table of one layer's routing: ceil(count / unit) units per expert, even."""
+    import csv
+    for r in csv.reader(open(path)):
+        if int(r[0]) == T and int(r[1]) == layer:
+            counts = list(map(int, r[2:]))
+            table = [e for e, c in enumerate(counts) for _ in range(-(-c // unit))]
+            pad = -len(table) % PAD_UNITS
+            return table + table[-1:] * pad
+    raise SystemExit(f"no row T={T} layer={layer} in {path}")
+
+
+def run_table(table, runs, kinds, tile_n, core_rows):
+    from xdna_relay.backends.npu.grouped_gemm import GroupedGEMM
+    kw = {"core_rows": core_rows, "unit_groups": table} | ({} if tile_n is None else {"tile_n": tile_n})
+    steps = []
+    for kind, (k, n) in (("g", (H, 2 * F)), ("d", (F, H))):
+        if kind not in kinds:
+            continue
+        m = GroupedGEMM.max_units(k)
+        parts = -(-len(table) // m)  # calls of at most m units, as even as multiples of 6 allow
+        size = -(-len(table) // parts)
+        size += -size % 6
+        for i in range(0, len(table), size):
+            part = table[i:i + size]
+            part = part + part[-1:] * (-len(part) % 6)
+            steps.append(GroupedGEMM.of(256, k, n, **(kw | {"unit_groups": part})))
+    t0 = time.perf_counter()
+    sa = Standalone(f"moe_table_{kinds}_{len(table)}_{abs(hash(tuple(table))) % 10**8}_{tile_n}_{core_rows}", steps)
+    build = time.perf_counter() - t0
+    sa.callable()
+    ts = []
+    for _ in range(runs):
+        t = time.perf_counter()
+        sa.callable()
+        ts.append(time.perf_counter() - t)
+    return build, statistics.median(ts), min(ts)
+
+
 def main():
     from tdr_guard import guard
     guard()
@@ -85,10 +127,22 @@ def main():
     ap.add_argument("--grouped", action="store_true", help="one GroupedGEMM call per kind")
     ap.add_argument("--tile-n", type=int)
     ap.add_argument("--core-rows", type=int, default=4)
+    ap.add_argument("--table", help="CSV of per-layer expert counts (bench/native/moe_routing MOE_DUMP)")
+    ap.add_argument("--T", type=int, default=2048)
+    ap.add_argument("--layer", type=int, default=13)
     ap.add_argument("--kinds", default="gd", help="g: gate+up, d: down, gd: both")
     a = ap.parse_args()
     print(f"# NPU power mode {pmode()}", flush=True)
     print("kinds,experts,rows,build_s,median_ms,min_ms,per_expert_us,est_40_layers_s", flush=True)
+    if a.table:
+        from xdna_relay.backends.npu.grouped_gemm import GroupedGEMM
+        unit = 64 * a.core_rows
+        table = table_from_counts(a.table, a.T, a.layer, unit)
+        build, med, mn = run_table(table, a.runs, a.kinds, a.tile_n, a.core_rows)
+        print(f"# steps: {len(table)} units in calls of <= {[GroupedGEMM.max_units(k) for k in (H, F)]}", flush=True)
+        print(f"table-{a.kinds}-tn{a.tile_n}-r{a.core_rows},T{a.T}/L{a.layer},{len(table)} units,{build:.1f},"
+              f"{1e3 * med:.2f},{1e3 * mn:.2f},{1e6 * med / len(table):.1f},{med * 40:.2f}", flush=True)
+        return
     if a.grouped:
         for e in map(int, a.experts.split(",")):
             build, med, mn = run_grouped(e, a.runs, a.kinds, a.tile_n, a.core_rows)

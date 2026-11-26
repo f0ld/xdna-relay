@@ -15,7 +15,7 @@ def _run(op, A, Bs):
     from iron.tune.measure import Standalone
     from xdna_relay.backends.npu.grouped_gemm import patch_standalone_bfp
     patch_standalone_bfp()
-    sa = Standalone(f"t046_{op.groups}_{op.K}_{op.N}_{op.core_rows}", [op], load=False)
+    sa = Standalone(f"t046_{op.groups}_{op.K}_{op.N}_{op.core_rows}_{abs(hash(op.unit_groups)) % 10**8}", [op], load=False)
     packed = op.pack_groups(Bs).view(np.uint8)
     sa._bytes("s0_A")[:A.nbytes] = A.view(np.uint8).reshape(-1)
     sa._bytes("s0_B")[:packed.nbytes] = packed
@@ -55,3 +55,20 @@ def test_refuses_resident_shapes_or_bad_m():
     from xdna_relay.backends.npu.grouped_gemm import GroupedGEMM
     with pytest.raises(ValueError):
         GroupedGEMM(M=512, K=2048, N=1024, groups=4, precision="medium", bfp16_b=True).resolved()
+
+
+@pytest.mark.parametrize("table,K,N,core_rows", [((2, 0, 2, 3, 1, 0), 2048, 1024, 2), ((3, 3, 3, 1), 512, 2048, 2),
+                                                 ((1, 0, 1), 2048, 1024, 4)])
+def test_unit_table(npu, table, K, N, core_rows):
+    """Units map to groups through a table: repeated and skipped groups, any order."""
+    from xdna_relay.backends.npu.grouped_gemm import GroupedGEMM
+    groups = 4
+    rng = np.random.default_rng(len(table) + K)
+    op = GroupedGEMM.of(groups, K, N, core_rows=core_rows, unit_groups=table)
+    A = (rng.standard_normal((op.M, K)) * 0.5).astype(bfloat16)
+    Bs = [(rng.standard_normal((K, N)) * 0.05).astype(bfloat16) for _ in range(groups)]
+    C = _run(op, A, Bs)
+    for u, g in enumerate(table):
+        rows = op.unit_rows(u)
+        err = np.abs(C[rows] - _ref(A[rows], Bs[g]))
+        assert (err <= _bound(op, A[rows], Bs[g])).all(), (u, g)

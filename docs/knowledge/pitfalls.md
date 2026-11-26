@@ -173,3 +173,6 @@ parent now closes it after `start()` and raises "NPU worker exited".
 - IRON `ProjectionGEMM` rows: a 256-row unit is not 256 contiguous rows of A/C; the two core-row
   halves (JOINS=2) each take their own half of M, unit u = rows 128u.. and M/2+128u.. (one
   unit: both coincide, so single-unit tests can't see it). `GroupedGEMM.unit_rows`.
+- GroupedGEMM with a unit table: one call over 512 B memtile ring passes per column block
+  (418/420 units of gate/up, K=2048) times out the NPU (TDR); 306 units (408 passes) runs.
+  Guarded (`GroupedGEMM.MAX_TABLE_PASSES`); split tables (`max_units`). Cause UNVERIFIED.

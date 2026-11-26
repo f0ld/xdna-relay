@@ -57,7 +57,38 @@ _EDITS = [
     ("            sweeps = 1 if slab.b_resident else slab.units\n"
      "            return B[mega_col * COLS + c].repeat(sweeps)\n",
      "            return B[slab.first : slab.first + slab.units, mega_col * COLS + c]\n"),
+    # a unit -> group table: one B transfer per unit per column (_split_blocks)
+    ("            for bi, (mega_col, active_cols) in enumerate(blocks):\n",
+     "            if self.unit_groups is not None:\n"
+     "                _split_blocks(self, blocks, a_legs, B, slab, set_up, push_b_mt, c_tap, n_work, last_c, COLS, JOINS)\n"
+     "            for bi, (mega_col, active_cols) in enumerate(blocks if self.unit_groups is None else []):\n"),
 ]
+
+
+def _split_blocks(op, blocks, a_legs, B, slab, set_up, push_b_mt, c_tap, n_work, last_c, COLS, JOINS):
+    """Unit u multiplies by group ``op.unit_groups[u]``: one B fill per unit per column.
+
+    Issued after the block's A fills, the arming (``set_up``) and its C drains, so that a
+    B lane's full queue (the compiler waits for a slot) never stands ahead of what the
+    cores need to make progress."""
+    for bi, (mega_col, active_cols) in enumerate(blocks):
+        for r, (tap, _) in enumerate(a_legs):
+            op.A.fill(tap, lane=r, managed=False)
+        if bi == 0:
+            set_up()
+        else:
+            push_b_mt(bi)
+        for c in range(active_cols):
+            last = bi == n_work(c) - 1
+            for half in range(JOINS):
+                task = op.C.drain(c_tap(mega_col, c, half, slab), lane=c * JOINS + half, wait=last,
+                                  managed=False)
+                if last:
+                    last_c.append(task)
+        for u in range(slab.first, slab.first + slab.units):
+            g = op.unit_groups[u]
+            for c in range(active_cols):
+                op.B.fill(B[g, mega_col * COLS + c], lane=c, managed=False)
 
 
 def _grouped_sequence():
@@ -71,6 +102,7 @@ def _grouped_sequence():
             raise ImportError(f"GroupedGEMM: IRON's ProjectionGEMM.sequence changed: edit found {n}x:\n{old_d}")
         src = src.replace(old_d, new_d)
     ns = dict(vars(_gemm_op))
+    ns["_split_blocks"] = _split_blocks
     exec(compile(src, f"<GroupedGEMM.sequence from {_gemm_op.__file__}>", "exec"), ns)
     return ns["sequence"]
 
@@ -82,6 +114,10 @@ class GroupedGEMM(ProjectionGEMM):
     # Core rows the GEMM uses (the device has 4): a unit is M_TILE x core_rows rows, so 2
     # halves the padding rows a sparsely routed expert drags through DDR.
     core_rows: int = param(default=4, array=True)
+    # Unit -> group (expert) table: unit u's rows multiply by group unit_groups[u]; M is
+    # len(unit_groups) units. None: unit g is group g. Static here (a rebuild per table): the
+    # T-046 probe of what one B transfer per unit costs the command processor.
+    unit_groups: tuple | None = param(default=None)
     packed_blocks: int = param(derive=lambda op: op.groups * op.K * op.N // bfp.BLOCK, repr=False)
 
     def validate(self) -> None:
@@ -90,8 +126,13 @@ class GroupedGEMM(ProjectionGEMM):
             raise ValueError("GroupedGEMM: packed bfp16 B (bfp16_b=True) at precision='medium' only")
         if self.core_rows not in (2, 4):
             raise ValueError(f"GroupedGEMM: core_rows ({self.core_rows}) must be 2 or 4")
-        if self.M != self.groups * self.unit:
-            raise ValueError(f"GroupedGEMM: M ({self.M}) must be groups ({self.groups}) x {self.unit}")
+        n_units = self.groups if self.unit_groups is None else len(self.unit_groups)
+        if self.unit_groups is not None and not all(0 <= g < self.groups for g in self.unit_groups):
+            raise ValueError("GroupedGEMM: unit_groups entries must be group indices")
+        if self.core_rows == 2 and n_units % 2:
+            raise ValueError("GroupedGEMM: core_rows=2 needs an even unit count (IRON checks M % 256; pad the table)")
+        if self.M != n_units * self.unit:
+            raise ValueError(f"GroupedGEMM: M ({self.M}) must be units ({n_units}) x {self.unit}")
         if self.m_chunk not in (None, 1):
             raise ValueError("GroupedGEMM: m_chunk must be 1")
 
@@ -113,22 +154,45 @@ class GroupedGEMM(ProjectionGEMM):
         per = _b_bytes(self.k_tile * self.tile_n, self.bfp16_b)
         return max(1, n - -(-extra // per))
 
+    # B memtile ring passes per column-block a call may take with a unit table: 2 queue
+    # pushes of 256. Measured 2026-11-26 (gate/up, 2 core rows, tile_n 128): 306 units = 408
+    # passes ran; 418 (836 passes) and 420 (560) hit an NPU command timeout (TDR). Likely the
+    # 3rd push waits on the 1st, which needs B fills _split_blocks issues after it. UNVERIFIED
+    # cause; the bound keeps calls inside what ran. Split a larger table over several calls.
+    MAX_TABLE_PASSES = 512
+
     def resolve(self, dev):
         r = super().resolve(dev)
-        if self.core_rows == r.rows:
-            return r
-        from iron.operators.flm.gemm.design import C_JOINS, M_TILE
-        return r.replace(rows=self.core_rows, c_l2=M_TILE * r.tile_n * self.core_rows // C_JOINS)
+        if self.core_rows != r.rows:
+            from iron.operators.flm.gemm.design import C_JOINS, M_TILE
+            r = r.replace(rows=self.core_rows, c_l2=M_TILE * r.tile_n * self.core_rows // C_JOINS)
+        if r.unit_groups is not None:
+            units, k_iters = len(r.unit_groups), r._k_iters
+            ring = max(s for s in range(1, r._b_slots + 1) if (units * k_iters) % s == 0)
+            if units * k_iters // ring > self.MAX_TABLE_PASSES:
+                raise ValueError(f"GroupedGEMM: {units} units x {k_iters} k tiles over a {ring}-slot ring is "
+                                 f"{units * k_iters // ring} B passes, over {self.MAX_TABLE_PASSES} (NPU timeout); "
+                                 f"split the unit table over several calls (max_units)")
+        return r
+
+    @classmethod
+    def max_units(cls, K: int, k_tile: int = 512, slots: int = 3) -> int:
+        """The most units one table call takes at this K (a multiple of 6), for splitting."""
+        n = cls.MAX_TABLE_PASSES * slots // (K // k_tile)
+        return n - n % 6
 
     @classmethod
     def of(cls, groups: int, K: int, N: int, epilogue_modes=(Epilogue.NONE,), core_rows: int = 4,
-           **tunables) -> "GroupedGEMM":
-        return cls(M=groups * 64 * core_rows, K=K, N=N, groups=groups, core_rows=core_rows,
+           unit_groups=None, **tunables) -> "GroupedGEMM":
+        units = groups if unit_groups is None else len(unit_groups)
+        if unit_groups is not None:
+            tunables["unit_groups"] = tuple(int(g) for g in unit_groups)
+        return cls(M=units * 64 * core_rows, K=K, N=N, groups=groups, core_rows=core_rows,
                    epilogue_modes=epilogue_modes,
                    precision=Precision.MEDIUM, b_col_maj=False, bfp16_b=True, **tunables)
 
     def unit_rows(self, g: int) -> np.ndarray:
-        """The ``unit`` rows of A and C that group ``g`` owns, in slot order."""
+        """The ``unit`` rows of A and C that unit ``g`` owns (group g without a table), in slot order."""
         half, h = self.M // 2, self.unit // 2
         return np.r_[g * h:(g + 1) * h, half + g * h:half + (g + 1) * h]
 

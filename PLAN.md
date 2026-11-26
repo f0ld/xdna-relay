@@ -23,10 +23,10 @@ Baseline (2026-11-25-moe-35b-a3b.md): iGPU decode 20.9 tok/s, prefill 471 tok/s,
 - T-044 — Engine/server on the 35B-A3B: `reasoning_content` split (llama-server deepseek format), MTP state in sequence snapshots, solo prefill takes the whole n_batch — Status: DONE (`scripts/test.sh T-044` 16/16; warm drafts = cold (was −6%); 2k-token TTFT 339 → 420 tok/s; bench/results/2026-11-26-moe-profile.md)
 - T-045 — IRON path: op inventory of qwen35moe, iGPU per-op profile, IRON coverage, graph
   plan with go/no-go gates — Status: DONE (`docs/knowledge/qwen35moe-iron-plan.md`)
-- T-046 — Experts on the NPU, gate 1 — Status: IN PROGRESS (GroupedGEMM operator done and
-  tested, `scripts/test.sh T-046` 6/6: 256 experts in 25 ms/layer at the DRAM ceiling; real
-  routing is heavy-tailed, so uniform capacity fails the gate (~1.1x); a per-unit weight-offset
-  layout would reach ~1.5x at 2k / ~2x at 4k, unbuilt; bench/results/2026-11-26-moe-expert-probe.md)
+- T-046 — Experts on the NPU, gate 1 — Status: IN PROGRESS (GroupedGEMM with a unit -> expert
+  table, `scripts/test.sh T-046` 9/9; real routing, 40 layers projected: 1.45x the iGPU at 2k,
+  2.1x at 4k, 2.7x at 8k; gate missed at 2k by a hair, passed for long prompts. Open: per-call
+  table (offset words), > 512 B passes per call timed out (guarded); bench/results/2026-11-26-moe-expert-probe.md)
 - T-047 — GatedDeltaRule IRON operator (fp32 state, sliced like SelectiveScan) + microbench;
   gate 2: ≤ 0.3 ms/token for 30 layers — Status: TODO
 - T-048 — Qwen35Moe graph on `iron.lm`, GGUF → bfp16 weight cache, hidden-state check vs
