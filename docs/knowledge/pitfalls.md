@@ -167,3 +167,9 @@ parent now closes it after `start()` and raises "NPU worker exited".
   is refused (returns 0) by an MTP context until a target-only restore exists (T-049).
 - MoE prefill efficiency depends on tokens per expert: pp2048 on the 35B-A3B is 394 tok/s at
   ubatch 256 vs 481 at 512 (iGPU). Don't shrink prefill chunks for a prompt that runs alone.
+- `PYTHONPATH=. python ...` after `. scripts/env.sh` drops the XRT python path the env set:
+  pyxrt is gone, `aie.utils.ensure_current_device()` returns None ("no NPU found",
+  "resolved() needs a device"). Use `PYTHONPATH=.:$PYTHONPATH`. iGPU-only scripts don't notice.
+- IRON `ProjectionGEMM` rows: a 256-row unit is not 256 contiguous rows of A/C; the two core-row
+  halves (JOINS=2) each take their own half of M, unit u = rows 128u.. and M/2+128u.. (one
+  unit: both coincide, so single-unit tests can't see it). `GroupedGEMM.unit_rows`.
